@@ -126,6 +126,15 @@
     }
     .btn-primary:hover { opacity: .88; }
 
+    .btn-secondary {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+    .add-hint { margin-top: 8px; font-size: 0.74rem; color: var(--muted); }
+
     .btn-danger {
       background: transparent;
       border: 1px solid var(--red);
@@ -223,6 +232,16 @@
       object-fit: cover;
       display: block;
     }
+
+    /* placeholder thumbnail for uploaded local files */
+    .card-filethumb {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 6px;
+      background: linear-gradient(150deg, #1a1c26, #101119);
+      color: var(--muted); font-size: 0.72rem;
+    }
+    .card-filethumb .ic { font-size: 1.8rem; }
 
     .play-overlay {
       position: absolute;
@@ -461,6 +480,21 @@
     }
     #wsPlayerContainer { position: absolute; inset: 0; width: 100%; height: 100%; }
     #wsPlayerContainer iframe { position:absolute; inset:0; width:100%; height:100%; }
+
+    /* continuous multi-file player */
+    .ws-fplayer { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; }
+    .ws-fplayer video { flex: 1; min-height: 0; width: 100%; background: #000; object-fit: contain; }
+    .ws-fbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 12px; background: rgba(0,0,0,.85); flex-shrink: 0;
+    }
+    .ws-fbar button {
+      background: none; border: none; color: #fff; cursor: pointer;
+      font-size: 1rem; padding: 2px 4px; line-height: 1;
+    }
+    .ws-fbar button:hover { color: var(--accent2); }
+    .ws-fseek { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
+    .ws-ftime { color: #ccc; font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     .ws-thumb-preview {
       position: absolute; inset: 0;
@@ -1015,7 +1049,10 @@
     <input type="text" id="urlInput" placeholder="Paste YouTube link…" autocomplete="off" spellcheck="false" />
     <input type="text" id="labelInput" placeholder="Label (optional)" autocomplete="off" />
     <button class="btn btn-primary" onclick="addVideo()">Add</button>
+    <button class="btn btn-secondary" id="uploadBtn" title="Upload video files from your computer">⬆ Upload files</button>
+    <input type="file" id="fileInput" accept="video/*" multiple hidden />
   </div>
+  <p class="add-hint">Tip: select several files at once to play them back-to-back as one entry.</p>
   <div class="error-msg" id="errorMsg"></div>
 </div>
 
@@ -1197,6 +1234,43 @@
 
   function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
 
+  function findVideo(id) { return loadData().videos.find(v => v.id === id); }
+
+  // ── IndexedDB: store uploaded video files (too big for localStorage) ──
+  const IDB_NAME = 'playback_files', IDB_STORE = 'files';
+  function idbOpen() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(IDB_NAME, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(IDB_STORE);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbPut(key, blob) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(blob, key);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+  async function idbGet(key) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const rq = tx.objectStore(IDB_STORE).get(key);
+      rq.onsuccess = () => res(rq.result);
+      rq.onerror = () => rej(rq.error);
+    });
+  }
+  function idbDelete(key) {
+    idbOpen().then(db => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(key);
+    }).catch(() => {});
+  }
+
   function extractYouTubeId(url) {
     url = url.trim();
     const patterns = [
@@ -1361,6 +1435,9 @@
 
   function removeTab(tabId) {
     const d = loadData();
+    // free any uploaded files belonging to videos in this tab
+    d.videos.filter(v => v.tabId === tabId && v.type === 'files')
+            .forEach(v => (v.files || []).forEach(f => idbDelete(f.key)));
     d.tabs   = d.tabs.filter(t => t.id !== tabId);
     d.videos = d.videos.filter(v => v.tabId !== tabId);
     if (d.activeTabId === tabId) d.activeTabId = d.tabs[0].id;
@@ -1420,9 +1497,14 @@
     videos.forEach(v => {
       const card = document.createElement('div');
       card.className = 'card';
+      const isFile = v.type === 'files';
+      const n = isFile ? v.files.length : 0;
+      const thumbInner = isFile
+        ? `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`
+        : `<img src="${thumbUrl(v.id)}" alt="" loading="lazy" />`;
       card.innerHTML = `
         <div class="card-thumb">
-          <img src="${thumbUrl(v.id)}" alt="" loading="lazy" />
+          ${thumbInner}
           <div class="play-overlay"><div class="play-btn">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </div></div>
@@ -1440,7 +1522,31 @@
 
   function deleteVideo(videoId) {
     const d = loadData();
+    const entry = d.videos.find(v => v.id === videoId && v.tabId === d.activeTabId);
+    if (entry && entry.type === 'files' && entry.files) entry.files.forEach(f => idbDelete(f.key));
     d.videos = d.videos.filter(v => !(v.id === videoId && v.tabId === d.activeTabId));
+    saveData(d);
+    renderGrid();
+  }
+
+  // ── Upload local video files ──
+  document.getElementById('uploadBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+  document.getElementById('fileInput').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
+
+  async function addFiles(fileList) {
+    const files = Array.from(fileList).filter(f => f.type.startsWith('video/'));
+    if (!files.length) { showError('Please choose video files.'); return; }
+    const d = loadData();
+    const entryId = 'file_' + Date.now();
+    const keys = [];
+    for (let i = 0; i < files.length; i++) {
+      const key = entryId + '_' + i;
+      try { await idbPut(key, files[i]); } catch (_) { showError('Could not store that file (too large?).'); return; }
+      keys.push({ key, name: files[i].name });
+    }
+    const base = files[0].name.replace(/\.[^.]+$/, '');
+    const label = files.length === 1 ? base : `${base} (+${files.length - 1} more)`;
+    d.videos.unshift({ id: entryId, type: 'files', label, files: keys, added: Date.now(), tabId: d.activeTabId });
     saveData(d);
     renderGrid();
   }
@@ -1495,6 +1601,7 @@
   var ytPlayer      = null;
   var ytAPIReady    = false;
   var wsPendingSeek = null;        // seconds to jump to once the player loads
+  var wsFileCtl     = null;        // active continuous-file player controller
   var streamCache   = {};          // videoId → {url, expiry}
   var CACHE_TTL     = 4 * 3600e3; // 4 hours in ms
 
@@ -1599,8 +1706,100 @@
       try { ytPlayer.stopVideo(); ytPlayer.destroy(); } catch(_) {}
       ytPlayer = null;
     }
+    wsFileCtl = null;
     const c = document.getElementById(containerId);
-    if (c) c.innerHTML = '';
+    if (c) {
+      if (c._objUrls) { c._objUrls.forEach(u => URL.revokeObjectURL(u)); c._objUrls = null; }
+      c.innerHTML = '';
+    }
+  }
+
+  function getDuration(url) {
+    return new Promise(res => {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => res(isFinite(v.duration) ? v.duration : 0);
+      v.onerror = () => res(0);
+      v.src = url;
+    });
+  }
+
+  function fmtTime(s) {
+    s = Math.max(0, Math.floor(s));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    const mm = h ? String(m).padStart(2, '0') : m;
+    return (h ? h + ':' : '') + mm + ':' + String(ss).padStart(2, '0');
+  }
+
+  // play an uploaded file entry as ONE continuous video (single timeline)
+  async function playFileEntry(entry, containerId) {
+    const container = document.getElementById(containerId);
+    stopPlayerIn(containerId);
+    container.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#555;font-size:.8rem;">Loading…</div>`;
+
+    // load all files + measure their durations
+    const blobs = await Promise.all(entry.files.map(f => idbGet(f.key)));
+    const urls = [];
+    blobs.forEach(b => { if (b) urls.push(URL.createObjectURL(b)); });
+    if (!urls.length) { container.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#777;">Files not found.</div>`; return; }
+    const durations = await Promise.all(urls.map(getDuration));
+    const offsets = []; let acc = 0;
+    durations.forEach(d => { offsets.push(acc); acc += d; });
+    const total = acc;
+
+    // build the unified player UI
+    const wrap   = document.createElement('div'); wrap.className = 'ws-fplayer';
+    const video  = document.createElement('video');
+    const bar    = document.createElement('div'); bar.className = 'ws-fbar';
+    const playBtn= document.createElement('button'); playBtn.textContent = '⏸'; playBtn.title = 'Play / Pause';
+    const seek   = document.createElement('input'); seek.type = 'range'; seek.className = 'ws-fseek';
+    seek.min = 0; seek.max = total || 0; seek.step = '0.1'; seek.value = 0;
+    const time   = document.createElement('span'); time.className = 'ws-ftime';
+    const fsBtn  = document.createElement('button'); fsBtn.textContent = '⛶'; fsBtn.title = 'Fullscreen';
+    bar.append(playBtn, seek, time, fsBtn);
+    wrap.append(video, bar);
+    container.innerHTML = '';
+    container.appendChild(wrap);
+    container._objUrls = urls;
+
+    let idx = 0, scrubbing = false;
+    function loadIdx(i, at) {
+      idx = i;
+      video.src = urls[i];
+      const start = at || 0;
+      video.addEventListener('loadedmetadata', () => { if (start) video.currentTime = start; }, { once: true });
+      video.play().catch(() => {});
+    }
+    function globalNow() { return offsets[idx] + (video.currentTime || 0); }
+    function update() {
+      const g = globalNow();
+      if (!scrubbing) seek.value = g;
+      time.textContent = fmtTime(g) + ' / ' + fmtTime(total);
+    }
+    function seekGlobal(t) {
+      t = Math.max(0, Math.min(t, total));
+      let i = 0;
+      while (i < offsets.length - 1 && t >= offsets[i + 1]) i++;
+      const local = t - offsets[i];
+      if (i !== idx) loadIdx(i, local);
+      else video.currentTime = local;
+    }
+
+    video.addEventListener('timeupdate', update);
+    video.addEventListener('play',  () => playBtn.textContent = '⏸');
+    video.addEventListener('pause', () => playBtn.textContent = '▶');
+    video.addEventListener('ended', () => { if (idx < urls.length - 1) loadIdx(idx + 1, 0); else playBtn.textContent = '▶'; });
+    video.style.cursor = 'pointer';
+    video.addEventListener('click', () => { video.paused ? video.play() : video.pause(); });   // click screen = pause/play
+    video.addEventListener('dblclick', () => { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen && wrap.requestFullscreen(); });
+    playBtn.addEventListener('click', () => { video.paused ? video.play() : video.pause(); });
+    seek.addEventListener('input',  () => { scrubbing = true;  time.textContent = fmtTime(+seek.value) + ' / ' + fmtTime(total); });
+    seek.addEventListener('change', () => { scrubbing = false; seekGlobal(+seek.value); });
+    fsBtn.addEventListener('click', () => { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen && wrap.requestFullscreen(); });
+
+    wsFileCtl = { seek: seekGlobal };
+    loadIdx(0, 0);
+    if (wsPendingSeek != null) { const s = wsPendingSeek; wsPendingSeek = null; seekGlobal(s); }
   }
 
   // ── Modal ──
@@ -1681,11 +1880,17 @@
     stopPlayerIn('wsPlayerContainer');
     document.getElementById('wsEmbedError').style.display = 'none';
     const wrap = document.getElementById('wsPlayerContainer');
+    const entry = findVideo(videoId);
     const prev = document.createElement('div');
     prev.className = 'ws-thumb-preview';
-    prev.style.backgroundImage = `url(${thumbUrl(videoId)})`;
     prev.innerHTML = `<div class="ws-thumb-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>`;
-    prev.addEventListener('click', () => createPlayer(videoId, 'wsPlayerContainer', 'wsEmbedError'));
+    if (entry && entry.type === 'files') {
+      prev.style.background = 'linear-gradient(150deg, #1a1c26, #101119)';
+      prev.addEventListener('click', () => playFileEntry(entry, 'wsPlayerContainer'));
+    } else {
+      prev.style.backgroundImage = `url(${thumbUrl(videoId)})`;
+      prev.addEventListener('click', () => createPlayer(videoId, 'wsPlayerContainer', 'wsEmbedError'));
+    }
     wrap.appendChild(prev);
   }
 
@@ -1953,6 +2158,7 @@
   }
 
   function seekVideo(sec) {
+    if (wsFileCtl) { wsFileCtl.seek(sec); return; }   // continuous multi-file player
     const vid = document.querySelector('#wsPlayerContainer video');
     if (vid) { try { vid.currentTime = sec; vid.play(); } catch(_) {} return; }
     const iframe = document.querySelector('#wsPlayerContainer iframe');
@@ -1962,7 +2168,9 @@
     }
     // still showing the thumbnail → load the player, then jump
     wsPendingSeek = sec;
-    createPlayer(ws.videoId, 'wsPlayerContainer', 'wsEmbedError');
+    const entry = findVideo(ws.videoId);
+    if (entry && entry.type === 'files') playFileEntry(entry, 'wsPlayerContainer');
+    else createPlayer(ws.videoId, 'wsPlayerContainer', 'wsEmbedError');
   }
 
   // click a blue timestamp to jump the video there
