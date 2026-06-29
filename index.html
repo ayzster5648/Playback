@@ -1330,6 +1330,7 @@
 
     <div class="confirm-actions">
       <button class="confirm-btn cancel" id="syncClose">Close</button>
+      <button class="confirm-btn cancel" id="syncPullBtn">↓ Pull from cloud</button>
       <button class="confirm-btn delete" id="syncConnect" style="background:var(--accent);">Connect &amp; Sync</button>
     </div>
   </div>
@@ -1451,7 +1452,7 @@
     } catch (e) { setSyncStatus('Sync error: ' + e.message, 'err'); }
   }
 
-  async function gistPull() {
+  async function gistPull(force) {
     const s = loadSync();
     if (!s.ghToken || !s.gistId) return false;
     try {
@@ -1465,8 +1466,8 @@
       if (f && f.content) {
         const remote = JSON.parse(f.content);
         const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-        // remote wins if it's newer (or local is empty)
-        if ((remote.updatedAt || 0) >= (local.updatedAt || 0)) {
+        // force = always take the cloud copy; otherwise only if it's newer
+        if (force || (remote.updatedAt || 0) >= (local.updatedAt || 0)) {
           localStorage.setItem(STORAGE_KEY, f.content);
         }
       }
@@ -1521,10 +1522,10 @@
   }
 
   // pull from cloud, then re-render
-  async function syncPullAndRender() {
+  async function syncPullAndRender(force) {
     if (syncing) return;
     syncing = true;
-    const ok = await gistPull();
+    const ok = await gistPull(force);
     syncing = false;
     if (ok) { renderTabs(); renderGrid(); }
   }
@@ -2946,13 +2947,30 @@
     s.cldName   = document.getElementById('syncCldName').value.trim();
     s.cldPreset = document.getElementById('syncCldPreset').value.trim();
     s.dlServer  = document.getElementById('syncDlServer').value.trim();
+    const joining = !!s.gistId;           // user typed an existing Gist ID → joining a library
     saveSync(s);
     if (!s.ghToken) { setSyncStatus('Enter a GitHub token to sync.', 'err'); return; }
     try {
-      await ensureGist();                 // create a gist if none given
-      await syncPullAndRender();          // pull latest, then if local newer, push
-      await gistPush();
+      if (joining) {
+        // take the cloud copy as-is — don't overwrite the shared library with this device's local data
+        await syncPullAndRender(true);
+        document.getElementById('syncDot').classList.add('on');
+        setSyncStatus('Joined library ✓', 'ok');
+        setTimeout(cacheAllOffline, 600);
+      } else {
+        await ensureGist();               // create a fresh gist from this device's data
+        await gistPush();
+        document.getElementById('syncDot').classList.add('on');
+        setSyncStatus('Connected — copy this Gist ID to your other devices.', 'ok');
+      }
     } catch (e) { setSyncStatus('Error: ' + e.message, 'err'); }
+  });
+
+  // manual force-refresh from the cloud
+  document.getElementById('syncPullBtn').addEventListener('click', async () => {
+    if (!loadSync().gistId) { setSyncStatus('Connect first.', 'err'); return; }
+    await syncPullAndRender(true);
+    setTimeout(cacheAllOffline, 600);
   });
 
   // ── Init ──
