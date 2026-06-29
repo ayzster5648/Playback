@@ -1,0 +1,13 @@
+{
+  "name": "Playback",
+  "short_name": "Playback",
+  "description": "Your personal video library with built-in notes.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#0c0c12",
+  "theme_color": "#e63946",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

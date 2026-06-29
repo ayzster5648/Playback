@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Playback</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='24' r='23' fill='%23e63946'/%3E%3Cpolygon points='19,14 36,24 19,34' fill='%23ffffff'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#e63946" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -133,7 +135,63 @@
     }
     .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
 
+    /* sync button in header */
+    .sync-btn {
+      position: relative;
+      width: 38px; height: 38px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--card); color: var(--muted);
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+      margin-left: 14px; flex-shrink: 0;
+      transition: color .15s, border-color .15s;
+    }
+    .sync-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .sync-btn svg { width: 19px; height: 19px; }
+    .sync-dot {
+      position: absolute; top: 6px; right: 6px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #555; box-shadow: 0 0 0 2px var(--card);
+    }
+    .sync-dot.on  { background: #36d399; }
+    .sync-dot.err { background: var(--accent); }
+
+    /* sync modal */
+    .sync-box { max-width: 420px; text-align: left; }
+    .sync-h { font-size: 1.05rem; color: var(--text); margin-bottom: 4px; }
+    .sync-sub { font-size: 0.78rem; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
+    .sync-label {
+      display: block; font-size: 0.72rem; font-weight: 600; color: var(--text);
+      margin: 12px 0 5px; letter-spacing: .3px;
+    }
+    .sync-label span { color: var(--muted); font-weight: 400; }
+    .sync-input {
+      width: 100%; background: rgba(255,255,255,.05);
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 0.85rem; font-family: inherit;
+      padding: 8px 10px; outline: none; transition: border-color .15s;
+    }
+    .sync-input:focus { border-color: var(--accent); }
+    .sync-divider { height: 1px; background: var(--border); margin: 18px 0 4px; }
+    .sync-status { font-size: 0.78rem; color: var(--muted); margin: 14px 0 4px; min-height: 1em; }
+
     .add-hint { margin-top: 8px; font-size: 0.74rem; color: var(--muted); }
+    .add-auto { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 0.78rem; color: var(--text); cursor: pointer; user-select: none; }
+    .add-auto input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+    /* offline-caching progress pill */
+    .cache-pill {
+      display: none; position: fixed; left: 18px; bottom: 18px; z-index: 120;
+      background: #14151d; border: 1px solid var(--border); border-radius: 22px;
+      padding: 9px 16px; font-size: 0.78rem; color: var(--text);
+      box-shadow: 0 8px 24px rgba(0,0,0,.5);
+      display: none; align-items: center; gap: 9px;
+    }
+    .cache-pill.show { display: inline-flex; }
+    .cache-pill::before {
+      content: ''; width: 13px; height: 13px; border-radius: 50%;
+      border: 2px solid #333; border-top-color: var(--accent);
+      animation: spin .75s linear infinite;
+    }
 
     .btn-danger {
       background: transparent;
@@ -460,6 +518,27 @@
     .ws-mini-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
     .ws-mini-btn.close:hover { background: rgba(230,57,70,.16); color: var(--accent2); }
 
+    .ws-dl-btn {
+      display: none; align-items: center; gap: 5px;
+      height: 30px; padding: 0 12px; flex-shrink: 0;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--card); color: var(--text);
+      font-size: 0.78rem; font-weight: 600; font-family: inherit; cursor: pointer;
+      transition: border-color .15s, color .15s, background .15s;
+    }
+    .ws-dl-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .ws-dl-btn.done  { border-color: #2e8b57; color: #36d399; }
+    .ws-dl-btn:disabled { opacity: .6; cursor: default; }
+
+    /* small "offline" badge on downloaded cards */
+    .card-offline {
+      position: absolute; top: 8px; left: 8px; z-index: 2;
+      background: rgba(0,0,0,.7); color: #36d399;
+      font-size: 0.62rem; font-weight: 700; letter-spacing: .5px;
+      padding: 3px 7px; border-radius: 20px;
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+
     /* ── Main area: video | divider | notes ── */
     .ws-main { flex: 1; display: flex; min-height: 0; }
 
@@ -493,7 +572,14 @@
       font-size: 1rem; padding: 2px 4px; line-height: 1;
     }
     .ws-fbar button:hover { color: var(--accent2); }
-    .ws-fseek { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
+    .ws-fseek-wrap { position: relative; flex: 1; display: flex; align-items: center; }
+    .ws-fseek { width: 100%; accent-color: var(--accent); cursor: pointer; height: 4px; }
+    .ws-fmark {
+      position: absolute; top: 50%; transform: translate(-50%, -50%);
+      width: 2px; height: 13px; background: #fff; opacity: .85;
+      border-radius: 1px; pointer-events: none;
+      box-shadow: 0 0 2px rgba(0,0,0,.8);
+    }
     .ws-ftime { color: #ccc; font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     .ws-thumb-preview {
@@ -1037,6 +1123,10 @@
     Your personal video library<br/>
     <span style="color:#555">paste · save · watch</span>
   </div>
+  <button id="syncBtn" class="sync-btn" title="Cloud sync settings">
+    <svg viewBox="0 0 20 20" fill="none"><path d="M4 9a6 6 0 0 1 10.5-3.5M16 11a6 6 0 0 1-10.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M14.5 3v2.5H12M5.5 17v-2.5H8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span id="syncDot" class="sync-dot"></span>
+  </button>
 </header>
 
 <!-- ── Tab bar ── -->
@@ -1052,6 +1142,7 @@
     <button class="btn btn-secondary" id="uploadBtn" title="Upload video files from your computer">⬆ Upload files</button>
     <input type="file" id="fileInput" accept="video/*" multiple hidden />
   </div>
+  <label class="add-auto"><input type="checkbox" id="autoOffline" checked /> Auto-save new YouTube videos for offline</label>
   <p class="add-hint">Tip: select several files at once to play them back-to-back as one entry.</p>
   <div class="error-msg" id="errorMsg"></div>
 </div>
@@ -1068,6 +1159,8 @@
   </div>
   <div class="grid" id="videoGrid"></div>
 </main>
+
+<div class="cache-pill" id="cachePill"></div>
 
 <!-- ── Modal player ── -->
 <div class="modal-overlay" id="modalOverlay">
@@ -1107,6 +1200,7 @@
   <div class="ws-modal" id="wsModal">
     <div class="ws-header">
       <input class="ws-title-input" id="wsTitleInput" placeholder="Untitled video" />
+      <button class="ws-dl-btn" id="wsDownload" title="Download this video to watch offline">⬇ <span id="wsDownloadTxt">Save offline</span></button>
       <button class="ws-mini-btn" id="wsFullscreen" title="Fullscreen">
         <svg viewBox="0 0 16 16" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -1207,6 +1301,40 @@
   </div>
 </div>
 
+<!-- cloud sync settings -->
+<div class="confirm-overlay" id="syncOverlay">
+  <div class="confirm-box sync-box">
+    <h3 class="sync-h">☁ Cloud Sync</h3>
+    <p class="sync-sub">Sync your library across all your devices. Keys are stored only on this device.</p>
+
+    <label class="sync-label">GitHub token <span>— for links &amp; notes</span></label>
+    <input class="sync-input" id="syncGhToken" type="password" placeholder="ghp_…" autocomplete="off" />
+
+    <label class="sync-label">Gist ID <span>— leave blank to auto-create</span></label>
+    <input class="sync-input" id="syncGistId" placeholder="(optional)" autocomplete="off" />
+
+    <div class="sync-divider"></div>
+
+    <label class="sync-label">Cloudinary cloud name <span>— for uploaded videos</span></label>
+    <input class="sync-input" id="syncCldName" placeholder="(optional)" autocomplete="off" />
+
+    <label class="sync-label">Cloudinary upload preset</label>
+    <input class="sync-input" id="syncCldPreset" placeholder="(optional)" autocomplete="off" />
+
+    <div class="sync-divider"></div>
+
+    <label class="sync-label">Download server URL <span>— for downloading on the web URL</span></label>
+    <input class="sync-input" id="syncDlServer" placeholder="https://….trycloudflare.com (optional)" autocomplete="off" />
+
+    <p class="sync-status" id="syncStatus"></p>
+
+    <div class="confirm-actions">
+      <button class="confirm-btn cancel" id="syncClose">Close</button>
+      <button class="confirm-btn delete" id="syncConnect" style="background:var(--accent);">Connect &amp; Sync</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ── Data model ──
   const STORAGE_KEY = 'playback_data';
@@ -1232,7 +1360,11 @@
     } catch { return defaultData(); }
   }
 
-  function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+  function saveData(d) {
+    d.updatedAt = Date.now();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+    queueSyncPush();
+  }
 
   function findVideo(id) { return loadData().videos.find(v => v.id === id); }
 
@@ -1269,6 +1401,132 @@
       const tx = db.transaction(IDB_STORE, 'readwrite');
       tx.objectStore(IDB_STORE).delete(key);
     }).catch(() => {});
+  }
+
+  // ══════════════ Cloud sync ══════════════
+  // Gist  → text data (links, tabs, notes, documents, timestamps)
+  // Cloudinary → uploaded video files
+  const SYNC_KEY = 'playback_sync';
+  function loadSync() { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { return {}; } }
+  function saveSync(s) { localStorage.setItem(SYNC_KEY, JSON.stringify(s)); }
+
+  // where /stream and /download live — the local server, or a tunnel URL for the web
+  function apiBase() {
+    const b = (loadSync().dlServer || '').trim();
+    return b ? b.replace(/\/+$/, '') : '';
+  }
+
+  function setSyncStatus(msg, kind) {
+    const el = document.getElementById('syncStatus');
+    if (el) el.textContent = msg || '';
+    const dot = document.getElementById('syncDot');
+    if (dot) {
+      dot.classList.remove('on', 'err');
+      if (kind === 'ok') dot.classList.add('on');
+      else if (kind === 'err') dot.classList.add('err');
+    }
+  }
+
+  let syncPushTimer = null, syncing = false;
+  function queueSyncPush() {
+    const s = loadSync();
+    if (!s.ghToken || !s.gistId) return;
+    clearTimeout(syncPushTimer);
+    syncPushTimer = setTimeout(gistPush, 1500);
+  }
+
+  async function gistPush() {
+    const s = loadSync();
+    if (!s.ghToken || !s.gistId) return;
+    try {
+      setSyncStatus('Saving to cloud…');
+      const content = localStorage.getItem(STORAGE_KEY) || '{}';
+      const res = await fetch('https://api.github.com/gists/' + s.gistId, {
+        method: 'PATCH',
+        headers: { Authorization: 'token ' + s.ghToken, Accept: 'application/vnd.github+json' },
+        body: JSON.stringify({ files: { 'playback_data.json': { content } } })
+      });
+      if (!res.ok) throw new Error('GitHub ' + res.status);
+      setSyncStatus('Synced ✓', 'ok');
+    } catch (e) { setSyncStatus('Sync error: ' + e.message, 'err'); }
+  }
+
+  async function gistPull() {
+    const s = loadSync();
+    if (!s.ghToken || !s.gistId) return false;
+    try {
+      setSyncStatus('Loading from cloud…');
+      const res = await fetch('https://api.github.com/gists/' + s.gistId, {
+        headers: { Authorization: 'token ' + s.ghToken, Accept: 'application/vnd.github+json' }
+      });
+      if (!res.ok) throw new Error('GitHub ' + res.status);
+      const gist = await res.json();
+      const f = gist.files && gist.files['playback_data.json'];
+      if (f && f.content) {
+        const remote = JSON.parse(f.content);
+        const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        // remote wins if it's newer (or local is empty)
+        if ((remote.updatedAt || 0) >= (local.updatedAt || 0)) {
+          localStorage.setItem(STORAGE_KEY, f.content);
+        }
+      }
+      setSyncStatus('Synced ✓', 'ok');
+      return true;
+    } catch (e) { setSyncStatus('Sync error: ' + e.message, 'err'); return false; }
+  }
+
+  async function ensureGist() {
+    const s = loadSync();
+    if (!s.ghToken || s.gistId) return;
+    const res = await fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers: { Authorization: 'token ' + s.ghToken, Accept: 'application/vnd.github+json' },
+      body: JSON.stringify({
+        description: 'Playback library data',
+        public: false,
+        files: { 'playback_data.json': { content: localStorage.getItem(STORAGE_KEY) || '{}' } }
+      })
+    });
+    if (!res.ok) throw new Error('Could not create gist (GitHub ' + res.status + ')');
+    const g = await res.json();
+    s.gistId = g.id; saveSync(s);
+    const idField = document.getElementById('syncGistId');
+    if (idField) idField.value = g.id;
+  }
+
+  // ── Cloudinary (uploaded videos) ──
+  async function cloudUpload(blob) {
+    const s = loadSync();
+    if (!s.cldName || !s.cldPreset) return null;
+    const fd = new FormData();
+    fd.append('file', blob);
+    fd.append('upload_preset', s.cldPreset);
+    const res = await fetch('https://api.cloudinary.com/v1_1/' + s.cldName + '/auto/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('Cloudinary ' + res.status);
+    const j = await res.json();
+    return j.secure_url || null;
+  }
+
+  // get a file's bytes — from local cache, else download from the cloud URL
+  async function getFileBlob(fileMeta) {
+    let blob = await idbGet(fileMeta.key);
+    if (blob) return blob;
+    if (fileMeta.url) {
+      try {
+        const res = await fetch(fileMeta.url);
+        if (res.ok) { blob = await res.blob(); idbPut(fileMeta.key, blob); return blob; }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  // pull from cloud, then re-render
+  async function syncPullAndRender() {
+    if (syncing) return;
+    syncing = true;
+    const ok = await gistPull();
+    syncing = false;
+    if (ok) { renderTabs(); renderGrid(); }
   }
 
   function extractYouTubeId(url) {
@@ -1502,9 +1760,11 @@
       const thumbInner = isFile
         ? `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`
         : `<img src="${thumbUrl(v.id)}" alt="" loading="lazy" />`;
+      const offlineBadge = (v.offline || isFile) ? `<span class="card-offline">⬇ offline</span>` : '';
       card.innerHTML = `
         <div class="card-thumb">
           ${thumbInner}
+          ${offlineBadge}
           <div class="play-overlay"><div class="play-btn">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </div></div>
@@ -1524,6 +1784,7 @@
     const d = loadData();
     const entry = d.videos.find(v => v.id === videoId && v.tabId === d.activeTabId);
     if (entry && entry.type === 'files' && entry.files) entry.files.forEach(f => idbDelete(f.key));
+    if (entry && entry.offline) idbDelete(entry.offline.key);
     d.videos = d.videos.filter(v => !(v.id === videoId && v.tabId === d.activeTabId));
     saveData(d);
     renderGrid();
@@ -1536,18 +1797,26 @@
   async function addFiles(fileList) {
     const files = Array.from(fileList).filter(f => f.type.startsWith('video/'));
     if (!files.length) { showError('Please choose video files.'); return; }
+    const sync = loadSync();
+    const cloud = !!(sync.cldName && sync.cldPreset);
     const d = loadData();
     const entryId = 'file_' + Date.now();
     const keys = [];
     for (let i = 0; i < files.length; i++) {
       const key = entryId + '_' + i;
       try { await idbPut(key, files[i]); } catch (_) { showError('Could not store that file (too large?).'); return; }
-      keys.push({ key, name: files[i].name });
+      let url = null;
+      if (cloud) {
+        showError('Uploading to cloud…');
+        try { url = await cloudUpload(files[i]); } catch (e) { showError('Cloud upload failed: ' + e.message); }
+      }
+      keys.push({ key, name: files[i].name, url });
     }
     const base = files[0].name.replace(/\.[^.]+$/, '');
     const label = files.length === 1 ? base : `${base} (+${files.length - 1} more)`;
     d.videos.unshift({ id: entryId, type: 'files', label, files: keys, added: Date.now(), tabId: d.activeTabId });
     saveData(d);
+    document.getElementById('errorMsg').textContent = '';
     renderGrid();
   }
 
@@ -1589,6 +1858,16 @@
     urlInput.value = ''; labelInput.value = '';
     document.getElementById('errorMsg').textContent = '';
     urlInput.focus();
+
+    // auto-download for offline in the background (only works via the local server)
+    if (document.getElementById('autoOffline').checked) {
+      const el = document.getElementById('errorMsg');
+      el.style.color = 'var(--muted)';
+      el.textContent = `Saving “${label}” for offline in the background…`;
+      downloadVideoOffline(id)
+        .then(ok => { el.textContent = ok ? `“${label}” saved offline ✓` : ''; setTimeout(() => { el.textContent = ''; el.style.color = ''; }, 4000); })
+        .catch(() => { el.textContent = ''; el.style.color = ''; });
+    }
   }
 
   function showError(msg) {
@@ -1610,7 +1889,7 @@
     var hit = streamCache[videoId];
     if (hit && hit.expiry > now) return hit.url;   // instant on repeat view
     try {
-      var res = await fetch('/stream?v=' + videoId);
+      var res = await fetch(apiBase() + '/stream?v=' + videoId);
       if (res.ok) {
         var data = await res.json();
         if (data.url) {
@@ -1714,6 +1993,13 @@
     }
   }
 
+  // decide how to play an entry: uploaded files, downloaded-offline copy, or YouTube stream
+  function playEntry(entry, containerId) {
+    if (entry && entry.type === 'files') return playFileEntry(entry, containerId);
+    if (entry && entry.offline)          return playFileEntry({ files: [entry.offline] }, containerId);
+    createPlayer((entry && entry.id) || ws.videoId, containerId, 'wsEmbedError');
+  }
+
   function getDuration(url) {
     return new Promise(res => {
       const v = document.createElement('video');
@@ -1738,7 +2024,7 @@
     container.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#555;font-size:.8rem;">Loading…</div>`;
 
     // load all files + measure their durations
-    const blobs = await Promise.all(entry.files.map(f => idbGet(f.key)));
+    const blobs = await Promise.all(entry.files.map(f => getFileBlob(f)));
     const urls = [];
     blobs.forEach(b => { if (b) urls.push(URL.createObjectURL(b)); });
     if (!urls.length) { container.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#777;">Files not found.</div>`; return; }
@@ -1752,11 +2038,24 @@
     const video  = document.createElement('video');
     const bar    = document.createElement('div'); bar.className = 'ws-fbar';
     const playBtn= document.createElement('button'); playBtn.textContent = '⏸'; playBtn.title = 'Play / Pause';
+    const seekWrap = document.createElement('div'); seekWrap.className = 'ws-fseek-wrap';
     const seek   = document.createElement('input'); seek.type = 'range'; seek.className = 'ws-fseek';
     seek.min = 0; seek.max = total || 0; seek.step = '0.1'; seek.value = 0;
+    seekWrap.appendChild(seek);
+    // section markers at each file boundary (like YouTube chapters)
+    if (total > 0) {
+      offsets.forEach((off, i) => {
+        if (i === 0) return;                       // no marker at the very start
+        const mark = document.createElement('div');
+        mark.className = 'ws-fmark';
+        mark.style.left = (off / total * 100) + '%';
+        mark.title = (entry.files[i] && entry.files[i].name) || ('Part ' + (i + 1));
+        seekWrap.appendChild(mark);
+      });
+    }
     const time   = document.createElement('span'); time.className = 'ws-ftime';
     const fsBtn  = document.createElement('button'); fsBtn.textContent = '⛶'; fsBtn.title = 'Fullscreen';
-    bar.append(playBtn, seek, time, fsBtn);
+    bar.append(playBtn, seekWrap, time, fsBtn);
     wrap.append(video, bar);
     container.innerHTML = '';
     container.appendChild(wrap);
@@ -1774,7 +2073,8 @@
     function update() {
       const g = globalNow();
       if (!scrubbing) seek.value = g;
-      time.textContent = fmtTime(g) + ' / ' + fmtTime(total);
+      const part = urls.length > 1 ? '  ·  Part ' + (idx + 1) + '/' + urls.length : '';
+      time.textContent = fmtTime(g) + ' / ' + fmtTime(total) + part;
     }
     function seekGlobal(t) {
       t = Math.max(0, Math.min(t, total));
@@ -1850,12 +2150,106 @@
     ws.videoId = videoId;
     ws.docId   = null;
     document.getElementById('wsTitleInput').value = v ? v.label : '';
+    refreshDownloadBtn(v);
     // start in overview: big video on top, chips at the bottom (no doc open)
     closeDoc();
     wsShowPreview(videoId);
     document.getElementById('wsOverlay').classList.remove('fullscreen');
     document.getElementById('wsOverlay').classList.add('open');
     document.body.style.overflow = 'hidden';
+  }
+
+  // show the download button only for YouTube entries; reflect downloaded state
+  function refreshDownloadBtn(entry) {
+    const btn = document.getElementById('wsDownload');
+    const txt = document.getElementById('wsDownloadTxt');
+    if (!entry || entry.type === 'files') { btn.style.display = 'none'; return; }
+    btn.style.display = 'inline-flex';
+    btn.disabled = false;
+    if (entry.offline) { btn.classList.add('done');  txt.textContent = 'Saved offline ✓'; }
+    else               { btn.classList.remove('done'); txt.textContent = 'Save offline'; }
+  }
+
+  // core: download a YouTube entry's file and store it (local + cloud). Returns true on success.
+  async function downloadVideoOffline(videoId, onStatus) {
+    const entry = findVideo(videoId);
+    if (!entry || entry.type === 'files' || entry.offline) return false;
+    onStatus && onStatus('Downloading…');
+    const res = await fetch(apiBase() + '/download?v=' + videoId);
+    if (!res.ok) throw new Error('needs Open Playback.bat + wifi');
+    const blob = await res.blob();
+    const key = 'off_' + videoId;
+    await idbPut(key, blob);
+    let url = null;
+    const s = loadSync();
+    if (s.cldName && s.cldPreset) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
+    const d = loadData();
+    d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url }; });
+    saveData(d);
+    renderGrid();
+    return true;
+  }
+
+  // workspace button
+  async function downloadOffline() {
+    const entry = findVideo(ws.videoId);
+    if (!entry || entry.type === 'files') return;
+    const btn = document.getElementById('wsDownload');
+    const txt = document.getElementById('wsDownloadTxt');
+    btn.disabled = true; btn.classList.remove('done');
+    try {
+      await downloadVideoOffline(ws.videoId, m => txt.textContent = m);
+      btn.disabled = false; btn.classList.add('done'); txt.textContent = 'Saved offline ✓';
+    } catch (e) {
+      btn.disabled = false; txt.textContent = 'Failed — ' + e.message;
+      setTimeout(() => { const v = findVideo(ws.videoId); if (v && !v.offline) txt.textContent = 'Save offline'; }, 4000);
+    }
+  }
+  document.getElementById('wsDownload').addEventListener('click', downloadOffline);
+
+  // ── Make the whole library available offline on THIS device ──
+  function setCachePill(msg) {
+    const p = document.getElementById('cachePill');
+    if (!p) return;
+    if (msg) { p.textContent = msg; p.classList.add('show'); }
+    else p.classList.remove('show');
+  }
+
+  let cachingNow = false;
+  async function cacheAllOffline() {
+    if (cachingNow || !navigator.onLine) return;
+    cachingNow = true;
+    try {
+      const d = loadData();
+      // build a list of items this device hasn't cached yet
+      const todo = [];
+      for (const v of d.videos) {
+        if (v.type === 'files' && v.files) {
+          for (const f of v.files) if (!(await idbGet(f.key)) && f.url) todo.push({ kind: 'cloud', meta: f });
+        } else if (v.offline) {
+          if (!(await idbGet(v.offline.key)) && v.offline.url) todo.push({ kind: 'cloud', meta: v.offline });
+        } else if (v.id) {
+          if (!(await idbGet('off_' + v.id))) todo.push({ kind: 'yt', id: v.id });
+        }
+      }
+      if (!todo.length) { cachingNow = false; return; }
+
+      let ytServerOk = true, done = 0;
+      for (const job of todo) {
+        setCachePill(`Saving videos for offline… (${todo.length - done} left)`);
+        try {
+          if (job.kind === 'cloud') {
+            await getFileBlob(job.meta);
+          } else if (job.kind === 'yt' && ytServerOk) {
+            try { await downloadVideoOffline(job.id); }
+            catch (_) { ytServerOk = false; }   // no local yt-dlp server here → stop trying YouTube downloads
+          }
+        } catch (_) {}
+        done++;
+      }
+      setCachePill('');
+      renderGrid();
+    } finally { cachingNow = false; }
   }
 
   function closeWorkspace() {
@@ -1886,11 +2280,10 @@
     prev.innerHTML = `<div class="ws-thumb-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>`;
     if (entry && entry.type === 'files') {
       prev.style.background = 'linear-gradient(150deg, #1a1c26, #101119)';
-      prev.addEventListener('click', () => playFileEntry(entry, 'wsPlayerContainer'));
     } else {
       prev.style.backgroundImage = `url(${thumbUrl(videoId)})`;
-      prev.addEventListener('click', () => createPlayer(videoId, 'wsPlayerContainer', 'wsEmbedError'));
     }
+    prev.addEventListener('click', () => playEntry(entry, 'wsPlayerContainer'));
     wrap.appendChild(prev);
   }
 
@@ -2168,9 +2561,7 @@
     }
     // still showing the thumbnail → load the player, then jump
     wsPendingSeek = sec;
-    const entry = findVideo(ws.videoId);
-    if (entry && entry.type === 'files') playFileEntry(entry, 'wsPlayerContainer');
-    else createPlayer(ws.videoId, 'wsPlayerContainer', 'wsEmbedError');
+    playEntry(findVideo(ws.videoId), 'wsPlayerContainer');
   }
 
   // click a blue timestamp to jump the video there
@@ -2531,6 +2922,39 @@
     if (e.key === 'Enter' && document.activeElement === document.getElementById('urlInput')) addVideo();
   });
 
+  // ── Sync settings modal ──
+  function openSyncModal() {
+    const s = loadSync();
+    document.getElementById('syncGhToken').value  = s.ghToken  || '';
+    document.getElementById('syncGistId').value   = s.gistId   || '';
+    document.getElementById('syncCldName').value  = s.cldName  || '';
+    document.getElementById('syncCldPreset').value= s.cldPreset|| '';
+    document.getElementById('syncDlServer').value = s.dlServer || '';
+    setSyncStatus(s.ghToken ? 'Connected.' : 'Not connected yet.', s.ghToken ? 'ok' : null);
+    document.getElementById('syncOverlay').classList.add('open');
+  }
+  document.getElementById('syncBtn').addEventListener('click', openSyncModal);
+  document.getElementById('syncClose').addEventListener('click', () => document.getElementById('syncOverlay').classList.remove('open'));
+  document.getElementById('syncOverlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('syncOverlay')) document.getElementById('syncOverlay').classList.remove('open');
+  });
+
+  document.getElementById('syncConnect').addEventListener('click', async () => {
+    const s = loadSync();
+    s.ghToken   = document.getElementById('syncGhToken').value.trim();
+    s.gistId    = document.getElementById('syncGistId').value.trim();
+    s.cldName   = document.getElementById('syncCldName').value.trim();
+    s.cldPreset = document.getElementById('syncCldPreset').value.trim();
+    s.dlServer  = document.getElementById('syncDlServer').value.trim();
+    saveSync(s);
+    if (!s.ghToken) { setSyncStatus('Enter a GitHub token to sync.', 'err'); return; }
+    try {
+      await ensureGist();                 // create a gist if none given
+      await syncPullAndRender();          // pull latest, then if local newer, push
+      await gistPush();
+    } catch (e) { setSyncStatus('Error: ' + e.message, 'err'); }
+  });
+
   // ── Init ──
   if (location.protocol === 'file:') {
     const b = document.createElement('div');
@@ -2541,6 +2965,26 @@
 
   renderTabs();
   renderGrid();
+
+  // register the service worker so the page opens offline (needs https or localhost)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  // pull cloud data on load + on focus, then cache the whole library to this device
+  (function() {
+    const s = loadSync();
+    if (s.ghToken && s.gistId) {
+      document.getElementById('syncDot').classList.add('on');
+      syncPullAndRender().then(() => setTimeout(cacheAllOffline, 800));
+      window.addEventListener('focus', () => {
+        if (!document.getElementById('wsOverlay').classList.contains('open')) syncPullAndRender();
+      });
+    } else {
+      // no cloud sync, but still download any not-yet-saved YouTube videos via the local server
+      setTimeout(cacheAllOffline, 1200);
+    }
+  })();
 </script>
 </body>
 </html>
