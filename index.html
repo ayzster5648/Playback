@@ -1802,7 +1802,9 @@
       const isFile = v.type === 'files';
       const n = isFile ? v.files.length : 0;
       const thumbInner = isFile
-        ? `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`
+        ? (v.poster
+            ? `<img src="${v.poster}" alt="" />`
+            : `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`)
         : `<img src="${thumbUrl(v.id)}" alt="" loading="lazy" />`;
       // label only when NOT saved for offline (downloaded ones stay clean)
       const needsNet = !isFile && !v.offline;
@@ -1840,6 +1842,19 @@
   document.getElementById('uploadBtn').addEventListener('click', () => document.getElementById('fileInput').click());
   document.getElementById('fileInput').addEventListener('change', e => { addFiles(e.target.files); e.target.value = ''; });
 
+  // generate thumbnails for already-uploaded files that don't have one yet
+  async function backfillPosters() {
+    const d = loadData();
+    let changed = false;
+    for (const v of d.videos) {
+      if (v.type === 'files' && !v.poster && v.files && v.files[0]) {
+        const blob = await idbGet(v.files[0].key);   // only if the file is on this device
+        if (blob) { const p = await makePoster(blob); if (p) { v.poster = p; changed = true; } }
+      }
+    }
+    if (changed) { saveData(d); renderGrid(); }
+  }
+
   async function addFiles(fileList) {
     const files = Array.from(fileList).filter(f => f.type.startsWith('video/'));
     if (!files.length) { showError('Please choose video files.'); return; }
@@ -1860,10 +1875,35 @@
     }
     const base = files[0].name.replace(/\.[^.]+$/, '');
     const label = files.length === 1 ? base : `${base} (+${files.length - 1} more)`;
-    d.videos.unshift({ id: entryId, type: 'files', label, files: keys, added: Date.now(), tabId: d.activeTabId });
+    let poster = null;
+    try { poster = await makePoster(files[0]); } catch (_) {}
+    d.videos.unshift({ id: entryId, type: 'files', label, files: keys, poster, added: Date.now(), tabId: d.activeTabId });
     saveData(d);
     document.getElementById('errorMsg').textContent = '';
     renderGrid();
+  }
+
+  // grab a frame from a video file to use as a thumbnail (returns a small jpeg data URL)
+  function makePoster(blob) {
+    return new Promise(resolve => {
+      const url = URL.createObjectURL(blob);
+      const v = document.createElement('video');
+      v.preload = 'metadata'; v.muted = true; v.src = url;
+      let done = false;
+      const finish = (val) => { if (done) return; done = true; URL.revokeObjectURL(url); resolve(val); };
+      v.addEventListener('loadeddata', () => { try { v.currentTime = Math.min(1, (v.duration || 2) / 2); } catch (_) { finish(null); } });
+      v.addEventListener('seeked', () => {
+        try {
+          const w = 320, h = Math.round(w * ((v.videoHeight / v.videoWidth) || 0.5625));
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(v, 0, 0, w, h);
+          finish(c.toDataURL('image/jpeg', 0.7));
+        } catch (_) { finish(null); }
+      });
+      v.addEventListener('error', () => finish(null));
+      setTimeout(() => finish(null), 8000);   // give up if it stalls
+    });
   }
 
   async function fetchYouTubeTitle(videoId) {
@@ -3089,6 +3129,7 @@
 
   renderTabs();
   renderGrid();
+  setTimeout(backfillPosters, 400);   // give uploaded videos a thumbnail
 
   // register the service worker so the page opens offline (needs https or localhost)
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
