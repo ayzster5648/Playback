@@ -2214,8 +2214,15 @@
     let blob = entry.offline ? await idbGet(key) : null;    // maybe already downloaded locally
     if (!blob) {
       onStatus && onStatus('Downloading…');
-      const res = await fetch(apiBase() + '/download?v=' + videoId);
-      if (!res.ok) throw new Error('needs Open Playback.bat + wifi');
+      let res;
+      try { res = await fetch(apiBase() + '/download?v=' + videoId); }
+      catch (_) { const e = new Error('Server not reachable'); e.code = 'no-server'; throw e; }
+      if (!res.ok) {
+        // 503 = no yt-dlp/server → stop. anything else (e.g. 500) = this one video failed → skip it.
+        const e = new Error(res.status === 503 ? 'Server has no yt-dlp' : 'Could not download this video');
+        e.code = (res.status === 503) ? 'no-server' : 'failed';
+        throw e;
+      }
       blob = await res.blob();
       await idbPut(key, blob);
     }
@@ -2336,7 +2343,7 @@
             await downloadVideoOffline(job.id);                 // uploads the local copy to the cloud
           } else if (job.kind === 'yt' && ytServerOk) {
             try { await downloadVideoOffline(job.id); }
-            catch (_) { ytServerOk = false; }   // no local yt-dlp server here → stop trying YouTube downloads
+            catch (e) { if (e.code === 'no-server') ytServerOk = false; }   // only stop if the server itself is gone; a single failed video just gets skipped
           }
         } catch (_) {}
         done++;
