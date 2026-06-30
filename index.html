@@ -2348,6 +2348,17 @@
     else p.classList.remove('show');
   }
 
+  // upload an uploaded file's local bytes to Cloudinary and record its URL
+  async function backfillFileToCloud(videoId, key) {
+    const blob = await idbGet(key);
+    if (!blob) return;
+    const url = await cloudUpload(blob);
+    if (!url) return;
+    const d = loadData();
+    const v = d.videos.find(x => x.id === videoId);
+    if (v && v.files) { const f = v.files.find(x => x.key === key); if (f) { f.url = url; saveData(d); } }
+  }
+
   let cachingNow = false;
   async function cacheAllOffline() {
     if (cachingNow || !navigator.onLine) return;
@@ -2360,7 +2371,11 @@
       const todo = [];
       for (const v of d.videos) {
         if (v.type === 'files' && v.files) {
-          for (const f of v.files) if (!(await idbGet(f.key)) && f.url) todo.push({ kind: 'cloud', meta: f });
+          for (const f of v.files) {
+            const hasLocal = !!(await idbGet(f.key));
+            if (hasLocal && !f.url && cloudReady) todo.push({ kind: 'fileup', videoId: v.id, key: f.key });  // local only → push to cloud
+            else if (!hasLocal && f.url)          todo.push({ kind: 'cloud', meta: f });                      // cloud only → pull down
+          }
         } else if (v.offline) {
           if (!v.offline.url && cloudReady && (await idbGet(v.offline.key))) {
             todo.push({ kind: 'backfill', id: v.id });          // downloaded here but not in cloud → push it up
@@ -2379,6 +2394,8 @@
         try {
           if (job.kind === 'cloud') {
             await getFileBlob(job.meta);
+          } else if (job.kind === 'fileup') {
+            await backfillFileToCloud(job.videoId, job.key);    // upload an uploaded file to the cloud
           } else if (job.kind === 'backfill') {
             await downloadVideoOffline(job.id);                 // uploads the local copy to the cloud
           } else if (job.kind === 'yt' && ytServerOk) {
