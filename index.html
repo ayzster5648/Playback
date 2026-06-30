@@ -1995,9 +1995,14 @@
   }
 
   // decide how to play an entry: uploaded files, downloaded-offline copy, or YouTube stream
-  function playEntry(entry, containerId) {
+  async function playEntry(entry, containerId) {
     if (entry && entry.type === 'files') return playFileEntry(entry, containerId);
-    if (entry && entry.offline)          return playFileEntry({ files: [entry.offline] }, containerId);
+    if (entry && entry.offline) {
+      // use the downloaded copy only if it's actually reachable on this device or in the cloud
+      const hasLocal = await idbGet(entry.offline.key);
+      if (hasLocal || entry.offline.url) return playFileEntry({ files: [entry.offline] }, containerId);
+      // not available here → fall through and just stream the YouTube video instead
+    }
     createPlayer((entry && entry.id) || ws.videoId, containerId, 'wsEmbedError');
   }
 
@@ -2028,7 +2033,7 @@
     const blobs = await Promise.all(entry.files.map(f => getFileBlob(f)));
     const urls = [];
     blobs.forEach(b => { if (b) urls.push(URL.createObjectURL(b)); });
-    if (!urls.length) { container.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#777;">Files not found.</div>`; return; }
+    if (!urls.length) { container.innerHTML = `<div style="position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;text-align:center;background:#000;color:#888;padding:24px;font-size:.82rem;"><span style="font-size:1.6rem;">☁️</span><span>This video's file isn't in the cloud yet.</span><span style="color:#666;">Set up Cloudinary, then re-download/re-upload it on the device that has it.</span></div>`; return; }
     const durations = await Promise.all(urls.map(getDuration));
     const offsets = []; let acc = 0;
     durations.forEach(d => { offsets.push(acc); acc += d; });
@@ -2167,20 +2172,26 @@
     if (!entry || entry.type === 'files') { btn.style.display = 'none'; return; }
     btn.style.display = 'inline-flex';
     btn.disabled = false;
-    if (entry.offline) { btn.classList.add('done');  txt.textContent = 'Saved offline ✓'; }
-    else               { btn.classList.remove('done'); txt.textContent = 'Save offline'; }
+    if (entry.offline && entry.offline.url) { btn.classList.add('done'); txt.textContent = 'Saved offline ✓'; }
+    else if (entry.offline)                 { btn.classList.remove('done'); txt.textContent = '☁ Save to cloud'; }
+    else                                    { btn.classList.remove('done'); txt.textContent = 'Save offline'; }
   }
 
-  // core: download a YouTube entry's file and store it (local + cloud). Returns true on success.
+  // core: get a YouTube entry's file saved (local + cloud). Returns true on success.
   async function downloadVideoOffline(videoId, onStatus) {
     const entry = findVideo(videoId);
-    if (!entry || entry.type === 'files' || entry.offline) return false;
-    onStatus && onStatus('Downloading…');
-    const res = await fetch(apiBase() + '/download?v=' + videoId);
-    if (!res.ok) throw new Error('needs Open Playback.bat + wifi');
-    const blob = await res.blob();
-    const key = 'off_' + videoId;
-    await idbPut(key, blob);
+    if (!entry || entry.type === 'files') return false;
+    if (entry.offline && entry.offline.url) return false;   // already fully saved (local + cloud)
+
+    const key = (entry.offline && entry.offline.key) || ('off_' + videoId);
+    let blob = entry.offline ? await idbGet(key) : null;    // maybe already downloaded locally
+    if (!blob) {
+      onStatus && onStatus('Downloading…');
+      const res = await fetch(apiBase() + '/download?v=' + videoId);
+      if (!res.ok) throw new Error('needs Open Playback.bat + wifi');
+      blob = await res.blob();
+      await idbPut(key, blob);
+    }
     let url = null;
     const s = loadSync();
     if (s.cldName && s.cldPreset) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
@@ -2222,13 +2233,19 @@
     cachingNow = true;
     try {
       const d = loadData();
+      const s = loadSync();
+      const cloudReady = !!(s.cldName && s.cldPreset);
       // build a list of items this device hasn't cached yet
       const todo = [];
       for (const v of d.videos) {
         if (v.type === 'files' && v.files) {
           for (const f of v.files) if (!(await idbGet(f.key)) && f.url) todo.push({ kind: 'cloud', meta: f });
         } else if (v.offline) {
-          if (!(await idbGet(v.offline.key)) && v.offline.url) todo.push({ kind: 'cloud', meta: v.offline });
+          if (!v.offline.url && cloudReady && (await idbGet(v.offline.key))) {
+            todo.push({ kind: 'backfill', id: v.id });          // downloaded here but not in cloud → push it up
+          } else if (v.offline.url && !(await idbGet(v.offline.key))) {
+            todo.push({ kind: 'cloud', meta: v.offline });      // in cloud but not on this device → pull down
+          }
         } else if (v.id) {
           if (!(await idbGet('off_' + v.id))) todo.push({ kind: 'yt', id: v.id });
         }
@@ -2241,6 +2258,8 @@
         try {
           if (job.kind === 'cloud') {
             await getFileBlob(job.meta);
+          } else if (job.kind === 'backfill') {
+            await downloadVideoOffline(job.id);                 // uploads the local copy to the cloud
           } else if (job.kind === 'yt' && ytServerOk) {
             try { await downloadVideoOffline(job.id); }
             catch (_) { ytServerOk = false; }   // no local yt-dlp server here → stop trying YouTube downloads
