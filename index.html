@@ -164,6 +164,12 @@
       margin: 12px 0 5px; letter-spacing: .3px;
     }
     .sync-label span { color: var(--muted); font-weight: 400; }
+    .sync-eye {
+      float: right; border: none; background: none; cursor: pointer;
+      color: var(--accent); font-size: 0.72rem; font-weight: 600; font-family: inherit;
+      padding: 0;
+    }
+    .sync-eye:hover { text-decoration: underline; }
     .sync-input {
       width: 100%; background: rgba(255,255,255,.05);
       border: 1px solid var(--border); border-radius: 8px;
@@ -174,9 +180,6 @@
     .sync-divider { height: 1px; background: var(--border); margin: 18px 0 4px; }
     .sync-status { font-size: 0.78rem; color: var(--muted); margin: 14px 0 4px; min-height: 1em; }
 
-    .add-hint { margin-top: 8px; font-size: 0.74rem; color: var(--muted); }
-    .add-auto { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 0.78rem; color: var(--text); cursor: pointer; user-select: none; }
-    .add-auto input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 
     /* offline-caching progress pill */
     .cache-pill {
@@ -235,6 +238,7 @@
       padding: 2px 8px;
       border-radius: 20px;
     }
+
 
     .empty-state {
       text-align: center;
@@ -530,13 +534,25 @@
     .ws-dl-btn.done  { border-color: #2e8b57; color: #36d399; }
     .ws-dl-btn:disabled { opacity: .6; cursor: default; }
 
-    /* small "offline" badge on downloaded cards */
-    .card-offline {
+    .ws-tab-select {
+      height: 30px; flex-shrink: 0; max-width: 140px;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--card); color: var(--text);
+      font-size: 0.78rem; font-family: inherit; padding: 0 6px; cursor: pointer;
+      transition: border-color .15s;
+    }
+    .ws-tab-select:hover { border-color: var(--accent); }
+
+    /* tab being dragged to reorder */
+    .tab.dragging { opacity: .4; }
+    .tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+
+    /* subtle label on videos that aren't saved for offline yet */
+    .card-online {
       position: absolute; top: 8px; left: 8px; z-index: 2;
-      background: rgba(0,0,0,.7); color: #36d399;
-      font-size: 0.62rem; font-weight: 700; letter-spacing: .5px;
-      padding: 3px 7px; border-radius: 20px;
-      display: inline-flex; align-items: center; gap: 3px;
+      background: rgba(0,0,0,.55); color: #cfd0db;
+      font-size: 0.6rem; font-weight: 600; letter-spacing: .4px;
+      padding: 3px 8px; border-radius: 20px;
     }
 
     /* ── Main area: video | divider | notes ── */
@@ -1142,8 +1158,6 @@
     <button class="btn btn-secondary" id="uploadBtn" title="Upload video files from your computer">⬆ Upload files</button>
     <input type="file" id="fileInput" accept="video/*" multiple hidden />
   </div>
-  <label class="add-auto"><input type="checkbox" id="autoOffline" checked /> Auto-save new YouTube videos for offline</label>
-  <p class="add-hint">Tip: select several files at once to play them back-to-back as one entry.</p>
   <div class="error-msg" id="errorMsg"></div>
 </div>
 
@@ -1200,6 +1214,10 @@
   <div class="ws-modal" id="wsModal">
     <div class="ws-header">
       <input class="ws-title-input" id="wsTitleInput" placeholder="Untitled video" />
+      <select class="ws-tab-select" id="wsTabSelect" title="Move this video to another tab"></select>
+      <button class="ws-mini-btn" id="wsSaveFile" title="Download as a file to your computer">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M8 2v8M4.5 7l3.5 3.5L11.5 7M3 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <button class="ws-dl-btn" id="wsDownload" title="Download this video to watch offline">⬇ <span id="wsDownloadTxt">Save offline</span></button>
       <button class="ws-mini-btn" id="wsFullscreen" title="Fullscreen">
         <svg viewBox="0 0 16 16" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1307,7 +1325,9 @@
     <h3 class="sync-h">☁ Cloud Sync</h3>
     <p class="sync-sub">Sync your library across all your devices. Keys are stored only on this device.</p>
 
-    <label class="sync-label">GitHub token <span>— for links &amp; notes</span></label>
+    <label class="sync-label">GitHub token <span>— for links &amp; notes</span>
+      <button type="button" class="sync-eye" id="syncEye">show</button>
+    </label>
     <input class="sync-input" id="syncGhToken" type="password" placeholder="ghp_…" autocomplete="off" />
 
     <label class="sync-label">Gist ID <span>— leave blank to auto-create</span></label>
@@ -1557,6 +1577,19 @@
   }
 
   // ── Tabs ──
+  var dragTabId = null;
+  function reorderTabs(fromId, toId) {
+    const d = loadData();
+    const from = d.tabs.findIndex(t => t.id === fromId);
+    let   to   = d.tabs.findIndex(t => t.id === toId);
+    if (from < 0 || to < 0) return;
+    const [moved] = d.tabs.splice(from, 1);
+    to = d.tabs.findIndex(t => t.id === toId);     // recompute after removal
+    d.tabs.splice(to, 0, moved);
+    saveData(d);
+    renderTabs();
+  }
+
   function renderTabs() {
     const d   = loadData();
     const bar = document.getElementById('tabBar');
@@ -1600,6 +1633,15 @@
       btn.appendChild(actions);
 
       btn.addEventListener('click', () => switchTab(tab.id));
+
+      // drag to reorder
+      btn.draggable = true;
+      btn.addEventListener('dragstart', e => { dragTabId = tab.id; btn.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; });
+      btn.addEventListener('dragend',   () => { dragTabId = null; document.querySelectorAll('.tab').forEach(t => t.classList.remove('dragging','drag-over')); });
+      btn.addEventListener('dragover',  e => { e.preventDefault(); if (dragTabId && dragTabId !== tab.id) btn.classList.add('drag-over'); });
+      btn.addEventListener('dragleave', () => btn.classList.remove('drag-over'));
+      btn.addEventListener('drop',      e => { e.preventDefault(); btn.classList.remove('drag-over'); if (dragTabId && dragTabId !== tab.id) reorderTabs(dragTabId, tab.id); });
+
       bar.appendChild(btn);
     });
 
@@ -1621,9 +1663,10 @@
     input.value = currentName;
     input.style.width = Math.max(60, currentName.length * 8) + 'px';
 
-    // hide the name + action popover while editing
+    // hide the name + action popover while editing; disable drag so text selection works
     nameSpan.style.display = 'none';
     if (actions) actions.style.display = 'none';
+    btnEl.draggable = false;
 
     btnEl.insertBefore(input, nameSpan);
     input.focus();
@@ -1761,11 +1804,13 @@
       const thumbInner = isFile
         ? `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`
         : `<img src="${thumbUrl(v.id)}" alt="" loading="lazy" />`;
-      const offlineBadge = (v.offline || isFile) ? `<span class="card-offline">⬇ offline</span>` : '';
+      // label only when NOT saved for offline (downloaded ones stay clean)
+      const needsNet = !isFile && !v.offline;
+      const badgeEl = needsNet ? `<span class="card-online">online only</span>` : '';
       card.innerHTML = `
         <div class="card-thumb">
           ${thumbInner}
-          ${offlineBadge}
+          ${badgeEl}
           <div class="play-overlay"><div class="play-btn">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
           </div></div>
@@ -1860,15 +1905,13 @@
     document.getElementById('errorMsg').textContent = '';
     urlInput.focus();
 
-    // auto-download for offline in the background (only works via the local server)
-    if (document.getElementById('autoOffline').checked) {
-      const el = document.getElementById('errorMsg');
-      el.style.color = 'var(--muted)';
-      el.textContent = `Saving “${label}” for offline in the background…`;
-      downloadVideoOffline(id)
-        .then(ok => { el.textContent = ok ? `“${label}” saved offline ✓` : ''; setTimeout(() => { el.textContent = ''; el.style.color = ''; }, 4000); })
-        .catch(() => { el.textContent = ''; el.style.color = ''; });
-    }
+    // always auto-download for offline in the background (only works via the local server / tunnel)
+    const el = document.getElementById('errorMsg');
+    el.style.color = 'var(--muted)';
+    el.textContent = `Saving “${label}” for offline in the background…`;
+    downloadVideoOffline(id)
+      .then(ok => { el.textContent = ok ? `“${label}” saved offline ✓` : ''; setTimeout(() => { el.textContent = ''; el.style.color = ''; }, 4000); })
+      .catch(() => { el.textContent = ''; el.style.color = ''; });
   }
 
   function showError(msg) {
@@ -1950,32 +1993,15 @@
       return;
     }
 
-    // 2. Fall back to YouTube IFrame API
+    // 2. yt-dlp only — never embed the YouTube player. Show how to fix instead.
     container.innerHTML = '';
-    function makeYTPlayer() {
-      ytPlayer = new YT.Player(containerId, {
-        videoId: videoId,
-        width: '100%',
-        height: '100%',
-        playerVars: { autoplay: 1, rel: 0, modestbranding: 1, playsinline: 1 },
-        events: {
-          onReady: function() {
-            if (wsPendingSeek != null) {
-              const s = wsPendingSeek; wsPendingSeek = null;
-              try { ytPlayer.seekTo(s, true); ytPlayer.playVideo(); } catch(_) {}
-            }
-          },
-          onError: function(e) {
-            if ((e.data === 101 || e.data === 150) && errDiv) {
-              errDiv.style.display = 'flex';
-              const lnk = errDiv.querySelector('a[id$="YtLink"]') || document.getElementById('embedYtLink');
-              if (lnk) lnk.href = 'https://www.youtube.com/watch?v=' + videoId;
-            }
-          }
-        }
-      });
+    if (errDiv) {
+      errDiv.style.display = 'flex';
+      const msg = errDiv.querySelector('p');
+      if (msg) msg.textContent = 'Can’t load this video through yt-dlp right now.';
+      const lnk = errDiv.querySelector('a[id$="YtLink"]') || document.getElementById('embedYtLink');
+      if (lnk) lnk.href = 'https://www.youtube.com/watch?v=' + videoId;
     }
-    if (ytAPIReady) { makeYTPlayer(); } else { pendingPlayer = { videoId, containerId, errId }; }
   }
 
   // generic teardown for any player container
@@ -2157,6 +2183,7 @@
     ws.docId   = null;
     document.getElementById('wsTitleInput').value = v ? v.label : '';
     refreshDownloadBtn(v);
+    refreshTabSelect(v);
     // start in overview: big video on top, chips at the bottom (no doc open)
     closeDoc();
     wsShowPreview(videoId);
@@ -2218,6 +2245,53 @@
     }
   }
   document.getElementById('wsDownload').addEventListener('click', downloadOffline);
+
+  // ── Move this video to another tab ──
+  function refreshTabSelect(entry) {
+    const sel = document.getElementById('wsTabSelect');
+    const d = loadData();
+    sel.innerHTML = '';
+    d.tabs.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.name;
+      if (entry && t.id === entry.tabId) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  document.getElementById('wsTabSelect').addEventListener('change', e => {
+    const d = loadData();
+    const v = d.videos.find(x => x.id === ws.videoId);
+    if (v) { v.tabId = e.target.value; saveData(d); renderGrid(); }
+  });
+
+  // ── Download the video as a file to the computer ──
+  async function saveBlobToComputer(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+  document.getElementById('wsSaveFile').addEventListener('click', async () => {
+    const entry = findVideo(ws.videoId);
+    if (!entry) return;
+    const btn = document.getElementById('wsSaveFile');
+    btn.disabled = true;
+    try {
+      if (entry.type === 'files') {
+        for (const f of entry.files) { const b = await getFileBlob(f); if (b) await saveBlobToComputer(b, f.name); }
+      } else {
+        let blob = entry.offline ? await getFileBlob(entry.offline) : null;
+        if (!blob) {                       // not downloaded yet → fetch via the server
+          const res = await fetch(apiBase() + '/download?v=' + entry.id);
+          if (!res.ok) throw new Error('needs the server/tunnel running');
+          blob = await res.blob();
+        }
+        await saveBlobToComputer(blob, (entry.label || 'video').replace(/[\\/:*?"<>|]/g, '') + '.mp4');
+      }
+    } catch (e) { alert('Could not download file: ' + e.message); }
+    btn.disabled = false;
+  });
 
   // ── Make the whole library available offline on THIS device ──
   function setCachePill(msg) {
@@ -2954,6 +3028,12 @@
     document.getElementById('syncOverlay').classList.add('open');
   }
   document.getElementById('syncBtn').addEventListener('click', openSyncModal);
+  document.getElementById('syncEye').addEventListener('click', () => {
+    const inp = document.getElementById('syncGhToken');
+    const eye = document.getElementById('syncEye');
+    if (inp.type === 'password') { inp.type = 'text';     eye.textContent = 'hide'; }
+    else                        { inp.type = 'password'; eye.textContent = 'show'; }
+  });
   document.getElementById('syncClose').addEventListener('click', () => document.getElementById('syncOverlay').classList.remove('open'));
   document.getElementById('syncOverlay').addEventListener('click', e => {
     if (e.target === document.getElementById('syncOverlay')) document.getElementById('syncOverlay').classList.remove('open');
@@ -3015,12 +3095,15 @@
       document.getElementById('syncDot').classList.add('on');
       syncPullAndRender().then(() => setTimeout(cacheAllOffline, 800));
       window.addEventListener('focus', () => {
-        if (!document.getElementById('wsOverlay').classList.contains('open')) syncPullAndRender();
+        if (!document.getElementById('wsOverlay').classList.contains('open')) {
+          syncPullAndRender().then(() => setTimeout(cacheAllOffline, 800));  // grab + download anything new from other devices
+        }
       });
     } else {
       // no cloud sync, but still download any not-yet-saved YouTube videos via the local server
       setTimeout(cacheAllOffline, 1200);
     }
+    window.addEventListener('online', () => setTimeout(cacheAllOffline, 500));  // catch up when internet returns
   })();
 </script>
 </body>
