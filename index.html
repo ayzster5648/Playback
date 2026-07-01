@@ -521,7 +521,14 @@
     .ws-mini-btn svg { width: 15px; height: 15px; }
     .ws-mini-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
     .ws-mini-btn.close:hover { background: rgba(230,57,70,.16); color: var(--accent2); }
-    .ws-speed-btn { width: auto; min-width: 34px; padding: 0 8px; font-size: 0.78rem; font-weight: 700; }
+    .ws-speed-input {
+      width: 42px; height: 30px; text-align: center; flex-shrink: 0;
+      border: 1px solid var(--border); border-radius: 7px;
+      background: var(--card); color: var(--text);
+      font-size: 0.78rem; font-weight: 700; font-family: inherit; outline: none;
+    }
+    .ws-speed-input:focus { border-color: var(--accent); }
+    .ws-speed-x { color: var(--muted); font-size: 0.78rem; font-weight: 700; margin: 0 4px 0 -2px; flex-shrink: 0; }
 
     .ws-dl-btn {
       display: none; align-items: center; gap: 5px;
@@ -593,10 +600,22 @@
     .ws-fseek { width: 100%; accent-color: var(--accent); cursor: pointer; height: 4px; }
     .ws-fmark {
       position: absolute; top: 50%; transform: translate(-50%, -50%);
-      width: 2px; height: 13px; background: #fff; opacity: .85;
-      border-radius: 1px; pointer-events: none;
+      width: 3px; height: 14px; background: #fff; opacity: .85;
+      border-radius: 2px; cursor: pointer;
       box-shadow: 0 0 2px rgba(0,0,0,.8);
     }
+    .ws-fmark:hover { background: var(--accent); opacity: 1; height: 18px; }
+    /* wider invisible hit area so it's easy to grab */
+    .ws-fmark::before { content: ''; position: absolute; inset: -4px -6px; }
+    /* name tooltip shown on hover */
+    .ws-fmark-tip {
+      position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+      background: #000; color: #fff; font-size: 0.7rem; font-weight: 600;
+      padding: 4px 9px; border-radius: 6px; white-space: nowrap;
+      pointer-events: none; opacity: 0; display: none;
+      box-shadow: 0 3px 10px rgba(0,0,0,.6); z-index: 10;
+    }
+    .ws-fmark:hover .ws-fmark-tip { display: block; opacity: 1; }
     .ws-ftime { color: #ccc; font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     .ws-thumb-preview {
@@ -789,6 +808,7 @@
     }
     .ws-tb-btn:hover { background: rgba(255,255,255,.1); }
     .ws-tb-btn:active { background: rgba(230,57,70,.25); }
+    .ws-tb-btn.on { background: rgba(230,57,70,.3); color: #fff; }
     .ws-tb-btn b { font-weight: 800; }
     .ws-tb-btn i { font-style: italic; }
     .ws-tb-btn u { text-decoration: underline; }
@@ -1215,7 +1235,8 @@
   <div class="ws-modal" id="wsModal">
     <div class="ws-header">
       <input class="ws-title-input" id="wsTitleInput" placeholder="Untitled video" />
-      <button class="ws-mini-btn ws-speed-btn" id="wsSpeed" title="Playback speed (click to change)">1×</button>
+      <input class="ws-speed-input" id="wsSpeed" type="text" inputmode="decimal" value="1" title="Playback speed — type a number (e.g. 1.5)" />
+      <span class="ws-speed-x">×</span>
       <select class="ws-tab-select" id="wsTabSelect" title="Move this video to another tab"></select>
       <button class="ws-mini-btn" id="wsSaveFile" title="Download as a file to your computer">
         <svg viewBox="0 0 16 16" fill="none"><path d="M8 2v8M4.5 7l3.5 3.5L11.5 7M3 13h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1235,8 +1256,8 @@
         <div class="ws-video-wrap">
           <div id="wsPlayerContainer"></div>
           <div class="embed-error" id="wsEmbedError">
-            <p>This video has embedding disabled by its creator.</p>
-            <p class="hint">To bypass: drop <strong>yt-dlp.exe</strong> into the Playback folder.</p>
+            <p>Can’t load this video right now.</p>
+            <p class="hint">The server may be busy downloading, or YouTube is briefly limiting requests. Wait a moment and try again — once it’s downloaded (⬇), it plays instantly with no wait.</p>
             <a class="yt-fallback-btn" id="wsEmbedYtLink" href="#" target="_blank" rel="noopener">Watch on YouTube ↗</a>
           </div>
         </div>
@@ -1866,16 +1887,20 @@
     const cloud = !!(sync.cldName && sync.cldPreset);
     const d = loadData();
     const entryId = 'file_' + Date.now();
+    const el = document.getElementById('errorMsg');
+    el.style.color = 'var(--muted)';
     const keys = [];
     for (let i = 0; i < files.length; i++) {
       const key = entryId + '_' + i;
       try { await idbPut(key, files[i]); } catch (_) { showError('Could not store that file (too large?).'); return; }
       let url = null;
+      let cloudTried = false;
       if (cloud) {
-        showError('Uploading to cloud…');
-        try { url = await cloudUpload(files[i]); } catch (e) { showError('Cloud upload failed: ' + e.message); }
+        el.textContent = files.length > 1 ? `Uploading ${i + 1} of ${files.length} to cloud…` : 'Uploading to cloud…';
+        cloudTried = true;
+        try { url = await cloudUpload(files[i]); } catch (_) {}
       }
-      keys.push({ key, name: files[i].name, url });
+      keys.push({ key, name: files[i].name, url, cloudTried });
     }
     const base = files[0].name.replace(/\.[^.]+$/, '');
     const label = files.length === 1 ? base : `${base} (+${files.length - 1} more)`;
@@ -1883,7 +1908,8 @@
     try { poster = await makePoster(files[0]); } catch (_) {}
     d.videos.unshift({ id: entryId, type: 'files', label, files: keys, poster, added: Date.now(), tabId: d.activeTabId });
     saveData(d);
-    document.getElementById('errorMsg').textContent = '';
+    el.textContent = cloud ? 'Uploaded ✓' : '';
+    setTimeout(() => { el.textContent = ''; el.style.color = ''; }, 3000);
     renderGrid();
   }
 
@@ -2119,14 +2145,31 @@
     const seek   = document.createElement('input'); seek.type = 'range'; seek.className = 'ws-fseek';
     seek.min = 0; seek.max = total || 0; seek.step = '0.1'; seek.value = 0;
     seekWrap.appendChild(seek);
-    // section markers at each file boundary (like YouTube chapters)
+    // section markers at each file boundary (like YouTube chapters) — double-click / right-click to name
     if (total > 0) {
       offsets.forEach((off, i) => {
         if (i === 0) return;                       // no marker at the very start
+        const f = entry.files[i] || {};
         const mark = document.createElement('div');
         mark.className = 'ws-fmark';
         mark.style.left = (off / total * 100) + '%';
-        mark.title = (entry.files[i] && entry.files[i].name) || ('Part ' + (i + 1));
+        const labelOf = () => f.title || f.name || ('Part ' + (i + 1));
+        const tip = document.createElement('span');
+        tip.className = 'ws-fmark-tip';
+        tip.textContent = labelOf();
+        mark.appendChild(tip);
+        const rename = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const name = await promptDialog('Name this section:', f.title || '');
+          if (name === null) return;               // cancelled
+          f.title = name;
+          tip.textContent = labelOf();
+          const d = loadData();                     // persist so it stays + syncs
+          const v = d.videos.find(x => x.id === entry.id);
+          if (v && v.files && v.files[i]) { v.files[i].title = name; saveData(d); }
+        };
+        mark.addEventListener('dblclick', rename);
+        mark.addEventListener('contextmenu', rename);
         seekWrap.appendChild(mark);
       });
     }
@@ -2215,18 +2258,22 @@
   // ══════════════ Workspace: video + notes ══════════════
   var ws = { videoId: null, docId: null, saveTimer: null, savedRange: null, splitPct: 50, speed: 1 };
 
-  // ── Playback speed ──
-  const WS_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+  // ── Playback speed (type a number) ──
   function applySpeed() {
     const v = document.querySelector('#wsPlayerContainer video');
     if (v) v.playbackRate = ws.speed;
   }
-  document.getElementById('wsSpeed').addEventListener('click', () => {
-    const i = WS_SPEEDS.indexOf(ws.speed);
-    ws.speed = WS_SPEEDS[(i + 1) % WS_SPEEDS.length];
-    document.getElementById('wsSpeed').textContent = ws.speed + '×';
+  function commitSpeed() {
+    const inp = document.getElementById('wsSpeed');
+    let s = parseFloat(inp.value);
+    if (isNaN(s)) s = 1;
+    s = Math.max(0.1, Math.min(4, Math.round(s * 100) / 100));   // 0.1×–4×
+    ws.speed = s;
+    inp.value = s;
     applySpeed();
-  });
+  }
+  document.getElementById('wsSpeed').addEventListener('change', commitSpeed);
+  document.getElementById('wsSpeed').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 
   function fmtDate(ts) {
     const dt = new Date(ts);
@@ -2240,7 +2287,7 @@
     ws.videoId = videoId;
     ws.docId   = null;
     document.getElementById('wsTitleInput').value = v ? v.label : '';
-    document.getElementById('wsSpeed').textContent = ws.speed + '×';
+    document.getElementById('wsSpeed').value = ws.speed;
     refreshDownloadBtn(v);
     refreshTabSelect(v);
     // start in overview: big video on top, chips at the bottom (no doc open)
@@ -2295,9 +2342,11 @@
     }
     let url = null;
     const s = loadSync();
-    if (s.cldName && s.cldPreset) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
+    const cloudReady = !!(s.cldName && s.cldPreset);
+    if (cloudReady) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
     const d = loadData();
-    d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url }; });
+    // cloudTried = we attempted the cloud upload (so we don't retry it endlessly every load)
+    d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url, cloudTried: cloudReady }; });
     saveData(d);
     renderGrid();
     return true;
@@ -2379,11 +2428,14 @@
   async function backfillFileToCloud(videoId, key) {
     const blob = await idbGet(key);
     if (!blob) return;
-    const url = await cloudUpload(blob);
-    if (!url) return;
+    let url = null;
+    try { url = await cloudUpload(blob); } catch (_) {}
     const d = loadData();
     const v = d.videos.find(x => x.id === videoId);
-    if (v && v.files) { const f = v.files.find(x => x.key === key); if (f) { f.url = url; saveData(d); } }
+    if (v && v.files) {
+      const f = v.files.find(x => x.key === key);
+      if (f) { if (url) f.url = url; f.cloudTried = true; saveData(d); }   // mark tried so it won't retry forever
+    }
   }
 
   let cachingNow = false;
@@ -2400,15 +2452,16 @@
         if (v.type === 'files' && v.files) {
           for (const f of v.files) {
             const hasLocal = !!(await idbGet(f.key));
-            if (hasLocal && !f.url && cloudReady) todo.push({ kind: 'fileup', videoId: v.id, key: f.key });  // local only → push to cloud
+            if (hasLocal && !f.url && !f.cloudTried && cloudReady) todo.push({ kind: 'fileup', videoId: v.id, key: f.key });  // local only, not yet tried → push to cloud (once)
             else if (!hasLocal && f.url)          todo.push({ kind: 'cloud', meta: f });                      // cloud only → pull down
           }
         } else if (v.offline) {
-          if (!v.offline.url && cloudReady && (await idbGet(v.offline.key))) {
-            todo.push({ kind: 'backfill', id: v.id });          // downloaded here but not in cloud → push it up
+          if (!v.offline.url && !v.offline.cloudTried && cloudReady && (await idbGet(v.offline.key))) {
+            todo.push({ kind: 'backfill', id: v.id });          // downloaded here, not yet tried in cloud → push it up (once)
           } else if (v.offline.url && !(await idbGet(v.offline.key))) {
             todo.push({ kind: 'cloud', meta: v.offline });      // in cloud but not on this device → pull down
           }
+          // has local blob + already tried cloud → leave it alone (plays locally, no more retries)
         } else if (v.id) {
           // no "downloaded" mark → needs it. downloadVideoOffline re-uses the saved file if one exists (fast re-link), else downloads.
           todo.push({ kind: 'yt', id: v.id });
@@ -2765,6 +2818,7 @@
     const content = document.getElementById('wsDocContent');
     if (sel.rangeCount && content.contains(sel.anchorNode)) {
       ws.savedRange = sel.getRangeAt(0);
+      updateToolbarState();
     }
   });
   function restoreRange() {
@@ -2772,6 +2826,16 @@
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(ws.savedRange);
+  }
+
+  // highlight toolbar buttons that are currently active (bold/italic/etc.)
+  function updateToolbarState() {
+    document.querySelectorAll('.ws-tb-btn[data-cmd]').forEach(btn => {
+      const cmd = btn.dataset.cmd;
+      let on = false;
+      try { on = document.queryCommandState(cmd); } catch (_) {}
+      btn.classList.toggle('on', on);
+    });
   }
 
   // toolbar command buttons
@@ -2783,6 +2847,7 @@
       if (cmd === 'hiliteColor') document.execCommand('styleWithCSS', false, true);
       document.execCommand(cmd, false, val);
       document.getElementById('wsDocContent').focus();
+      updateToolbarState();
       scheduleSave();
     });
   });
