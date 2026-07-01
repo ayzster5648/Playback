@@ -1435,6 +1435,8 @@
 
   // where /stream and /download live — the local server, or a tunnel URL for the web
   function apiBase() {
+    // on localhost use the local server directly; the tunnel URL is only for the web host
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return '';
     const b = (loadSync().dlServer || '').trim();
     return b ? b.replace(/\/+$/, '') : '';
   }
@@ -1975,7 +1977,7 @@
     var hit = streamCache[videoId];
     if (hit && hit.expiry > now) return hit.url;   // instant on repeat view
     try {
-      var res = await fetch(apiBase() + '/stream?v=' + videoId);
+      var res = await fetch(apiBase() + '/stream?v=' + videoId, { headers: { 'ngrok-skip-browser-warning': '1' } });
       if (res.ok) {
         var data = await res.json();
         if (data.url) {
@@ -2274,7 +2276,7 @@
       let res;
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 180000);   // 3-min cap so one bad video can't freeze the queue
-      try { res = await fetch(apiBase() + '/download?v=' + videoId, { signal: ctrl.signal }); }
+      try { res = await fetch(apiBase() + '/download?v=' + videoId, { signal: ctrl.signal, headers: { 'ngrok-skip-browser-warning': '1' } }); }
       catch (e) {
         clearTimeout(timer);
         const err = new Error(e.name === 'AbortError' ? 'Timed out' : 'Server not reachable');
@@ -2355,7 +2357,7 @@
       } else {
         let blob = entry.offline ? await getFileBlob(entry.offline) : null;
         if (!blob) {                       // not downloaded yet → fetch via the server
-          const res = await fetch(apiBase() + '/download?v=' + entry.id);
+          const res = await fetch(apiBase() + '/download?v=' + entry.id, { headers: { 'ngrok-skip-browser-warning': '1' } });
           if (!res.ok) throw new Error('needs the server/tunnel running');
           blob = await res.blob();
         }
@@ -3166,6 +3168,19 @@
   });
 
   // ── Init ──
+  // one-time: earlier downloads could be unplayable HLS/TS. On the PC (which can re-download),
+  // clear old offline copies once so they get re-saved as real MP4s.
+  (function() {
+    const onPC = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    if (onPC && localStorage.getItem('playback_dlfix') !== '3') {
+      const d = loadData();
+      let changed = false;
+      d.videos.forEach(v => { if (v.offline) { idbDelete(v.offline.key); delete v.offline; changed = true; } });
+      if (changed) saveData(d);
+      localStorage.setItem('playback_dlfix', '3');
+    }
+  })();
+
   if (location.protocol === 'file:') {
     const b = document.createElement('div');
     b.style.cssText = 'background:#7c4a00;color:#fde68a;padding:10px 40px;font-size:0.82rem;display:flex;align-items:center;justify-content:space-between;gap:12px;';
@@ -3177,9 +3192,14 @@
   renderGrid();
   setTimeout(backfillPosters, 400);   // give uploaded videos a thumbnail
 
-  // register the service worker so the page opens offline (needs https or localhost)
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+  // register the service worker so the page opens offline (only on the real web host).
+  // on localhost it just causes stale code, so unregister it there.
+  if ('serviceWorker' in navigator) {
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+    } else if (location.protocol !== 'file:') {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
   }
 
   // pull cloud data on load + on focus, then cache the whole library to this device
