@@ -184,17 +184,21 @@
     /* offline-caching progress pill */
     .cache-pill {
       display: none; position: fixed; left: 18px; bottom: 18px; z-index: 120;
-      background: #14151d; border: 1px solid var(--border); border-radius: 22px;
-      padding: 9px 16px; font-size: 0.78rem; color: var(--text);
+      background: #14151d; border: 1px solid var(--border); border-radius: 12px;
+      padding: 10px 16px; font-size: 0.78rem; color: var(--text);
       box-shadow: 0 8px 24px rgba(0,0,0,.5);
-      display: none; align-items: center; gap: 9px;
+      flex-direction: column; align-items: stretch; gap: 8px; min-width: 240px; max-width: 340px;
     }
     .cache-pill.show { display: inline-flex; }
-    .cache-pill::before {
-      content: ''; width: 13px; height: 13px; border-radius: 50%;
+    .cache-pill-text { display: flex; align-items: center; gap: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cache-pill-text::before {
+      content: ''; width: 13px; height: 13px; flex-shrink: 0; border-radius: 50%;
       border: 2px solid #333; border-top-color: var(--accent);
       animation: spin .75s linear infinite;
     }
+    .cache-pill-track { display: none; height: 5px; background: #2a2c3a; border-radius: 3px; overflow: hidden; }
+    .cache-pill.has-bar .cache-pill-track { display: block; }
+    .cache-pill-bar { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .2s ease; }
 
     .btn-danger {
       background: transparent;
@@ -1197,7 +1201,7 @@
   <div class="grid" id="videoGrid"></div>
 </main>
 
-<div class="cache-pill" id="cachePill"></div>
+<div class="cache-pill" id="cachePill"><span class="cache-pill-text"></span><span class="cache-pill-track"><span class="cache-pill-bar"></span></span></div>
 
 <!-- ── Modal player ── -->
 <div class="modal-overlay" id="modalOverlay">
@@ -2364,7 +2368,21 @@
         e.code = (res.status === 503) ? 'no-server' : 'failed';
         throw e;
       }
-      blob = await res.blob();
+      // stream the body so we can show a progress bar
+      const total = +res.headers.get('Content-Length') || 0;
+      if (res.body && res.body.getReader) {
+        const reader = res.body.getReader();
+        const chunks = []; let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value); received += value.length;
+          onStatus && onStatus('Downloading…', total ? Math.round(received / total * 100) : null);
+        }
+        blob = new Blob(chunks, { type: 'video/mp4' });
+      } else {
+        blob = await res.blob();
+      }
       await idbPut(key, blob);
     }
     let url = null;
@@ -2446,11 +2464,15 @@
   });
 
   // ── Make the whole library available offline on THIS device ──
-  function setCachePill(msg) {
+  function setCachePill(msg, pct) {
     const p = document.getElementById('cachePill');
     if (!p) return;
-    if (msg) { p.textContent = msg; p.classList.add('show'); }
-    else p.classList.remove('show');
+    if (!msg) { p.classList.remove('show'); return; }
+    p.querySelector('.cache-pill-text').textContent = msg + (pct != null ? ' ' + pct + '%' : '');
+    const bar = p.querySelector('.cache-pill-bar');
+    if (pct != null) { p.classList.add('has-bar'); bar.style.width = pct + '%'; }
+    else { p.classList.remove('has-bar'); }
+    p.classList.add('show');
   }
 
   // upload an uploaded file's local bytes to Cloudinary and record its URL
@@ -2501,17 +2523,19 @@
       let ytServerOk = true, done = 0;
       for (const job of todo) {
         const jv = findVideo(job.id || job.videoId);
-        const jlabel = (jv && jv.label) ? jv.label.slice(0, 34) : '';
-        setCachePill(`Saving “${jlabel}”… (${todo.length - done} left)`);
+        const jlabel = (jv && jv.label) ? jv.label.slice(0, 28) : '';
+        const left = todo.length - done;
+        const status = (msg, pct) => setCachePill(`${jlabel} — ${msg}${left > 1 ? '  ·  ' + left + ' left' : ''}`, pct);
+        status('starting…');
         try {
           if (job.kind === 'cloud') {
             await getFileBlob(job.meta);
           } else if (job.kind === 'fileup') {
             await backfillFileToCloud(job.videoId, job.key);    // upload an uploaded file to the cloud
           } else if (job.kind === 'backfill') {
-            await downloadVideoOffline(job.id);                 // uploads the local copy to the cloud
+            await downloadVideoOffline(job.id, status);         // uploads the local copy to the cloud
           } else if (job.kind === 'yt' && ytServerOk) {
-            try { await downloadVideoOffline(job.id); }
+            try { await downloadVideoOffline(job.id, status); }
             catch (e) { if (e.code === 'no-server') ytServerOk = false; }   // only stop if the server itself is gone; a single failed video just gets skipped
           }
         } catch (_) {}
