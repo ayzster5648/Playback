@@ -562,6 +562,8 @@
       font-size: 0.6rem; font-weight: 600; letter-spacing: .4px;
       padding: 3px 8px; border-radius: 20px;
     }
+    .card-syncing { background: rgba(230,57,70,.85); color: #fff; animation: pulse 1.3s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
     /* ── Main area: video | divider | notes ── */
     .ws-main { flex: 1; display: flex; min-height: 0; }
@@ -1553,13 +1555,24 @@
     return j.secure_url || null;
   }
 
-  // get a file's bytes — from local cache, else download from the cloud URL
+  // store a big file on the user's own server (disk); returns a URL other devices can fetch
+  async function uploadToServer(file, id) {
+    const res = await fetch((apiBase() || '') + '/upload?id=' + encodeURIComponent(id), {
+      method: 'POST', body: file, headers: { 'ngrok-skip-browser-warning': '1' }
+    });
+    if (!res.ok) throw new Error('server ' + res.status);
+    const s = loadSync();
+    const pub = (s.dlServer || '').trim().replace(/\/+$/, '');   // tunnel URL for cross-device access
+    return (pub || (apiBase() || '')) + '/file?id=' + encodeURIComponent(id);
+  }
+
+  // get a file's bytes — from local cache, else download from its URL (cloud or your server)
   async function getFileBlob(fileMeta) {
     let blob = await idbGet(fileMeta.key);
     if (blob) return blob;
     if (fileMeta.url) {
       try {
-        const res = await fetch(fileMeta.url);
+        const res = await fetch(fileMeta.url, { headers: { 'ngrok-skip-browser-warning': '1' } });
         if (res.ok) { blob = await res.blob(); idbPut(fileMeta.key, blob); return blob; }
       } catch (_) {}
     }
@@ -1831,9 +1844,17 @@
             ? `<img src="${v.poster}" alt="" />`
             : `<div class="card-filethumb"><span class="ic">🎞️</span><span>${n} file${n === 1 ? '' : 's'}</span></div>`)
         : `<img src="${thumbUrl(v.id)}" alt="" loading="lazy" />`;
-      // label only when NOT saved for offline (downloaded ones stay clean)
-      const needsNet = !isFile && !v.offline;
-      const badgeEl = needsNet ? `<span class="card-online">online only</span>` : '';
+      // status badge
+      const cloudOn = (function(){ const s = loadSync(); return !!(s.cldName && s.cldPreset); })();
+      let badgeEl = '';
+      if (!isFile && !v.offline) {
+        badgeEl = `<span class="card-online">online only</span>`;
+      } else if (isFile && v.files && v.files.some(f => !f.url)) {
+        const willUpload = cloudOn && v.files.some(f => !f.url && !f.cloudTried);
+        badgeEl = willUpload
+          ? `<span class="card-online card-syncing">syncing…</span>`
+          : `<span class="card-online">this device only</span>`;
+      }
       card.innerHTML = `
         <div class="card-thumb">
           ${thumbInner}
@@ -1889,16 +1910,22 @@
     const entryId = 'file_' + Date.now();
     const el = document.getElementById('errorMsg');
     el.style.color = 'var(--muted)';
+    const CLOUD_MAX = 95 * 1024 * 1024;   // Cloudinary free cap ~100MB
     const keys = [];
     for (let i = 0; i < files.length; i++) {
       const key = entryId + '_' + i;
       try { await idbPut(key, files[i]); } catch (_) { showError('Could not store that file (too large?).'); return; }
       let url = null;
       let cloudTried = false;
-      if (cloud) {
-        el.textContent = files.length > 1 ? `Uploading ${i + 1} of ${files.length} to cloud…` : 'Uploading to cloud…';
+      const pre = files.length > 1 ? `Uploading ${i + 1} of ${files.length}` : 'Uploading';
+      if (cloud && files[i].size < CLOUD_MAX) {            // small → Cloudinary (works with PC off)
+        el.textContent = pre + ' to cloud…';
         cloudTried = true;
         try { url = await cloudUpload(files[i]); } catch (_) {}
+      }
+      if (!url) {                                          // big, or cloud failed → store on your PC/server
+        el.textContent = pre + ' to your server…';
+        try { url = await uploadToServer(files[i], key); cloudTried = true; } catch (_) {}
       }
       keys.push({ key, name: files[i].name, url, cloudTried });
     }
@@ -2343,10 +2370,12 @@
     let url = null;
     const s = loadSync();
     const cloudReady = !!(s.cldName && s.cldPreset);
-    if (cloudReady) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
+    const CLOUD_MAX = 95 * 1024 * 1024;
+    if (cloudReady && blob.size < CLOUD_MAX) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
+    if (!url) { onStatus && onStatus('Saving to your server…'); try { url = await uploadToServer(blob, key); } catch (_) {} }   // big video → store on your PC, served via tunnel
     const d = loadData();
-    // cloudTried = we attempted the cloud upload (so we don't retry it endlessly every load)
-    d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url, cloudTried: cloudReady }; });
+    // cloudTried = we attempted upload (so we don't retry it endlessly every load)
+    d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url, cloudTried: true }; });
     saveData(d);
     renderGrid();
     return true;
