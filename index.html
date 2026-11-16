@@ -2349,7 +2349,7 @@
       onStatus && onStatus('Downloading…');
       let res;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 180000);   // 3-min cap so one bad video can't freeze the queue
+      const timer = setTimeout(() => ctrl.abort(), 1800000);   // 30-min cap so long videos have time to finish
       try { res = await fetch(apiBase() + '/download?v=' + videoId, { signal: ctrl.signal, headers: { 'ngrok-skip-browser-warning': '1' } }); }
       catch (e) {
         clearTimeout(timer);
