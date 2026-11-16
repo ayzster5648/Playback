@@ -1575,8 +1575,13 @@
     let blob = await idbGet(fileMeta.key);
     if (blob) return blob;
     if (fileMeta.url) {
+      let u = fileMeta.url;
+      // on the PC itself, grab server files straight from localhost instead of looping out through the tunnel
+      const onLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+      const fi = u.indexOf('/file?id=');
+      if (onLocal && fi !== -1) u = u.substring(fi);
       try {
-        const res = await fetch(fileMeta.url, { headers: { 'ngrok-skip-browser-warning': '1' } });
+        const res = await fetch(u, { headers: { 'ngrok-skip-browser-warning': '1' } });
         if (res.ok) { blob = await res.blob(); idbPut(fileMeta.key, blob); return blob; }
       } catch (_) {}
     }
@@ -2347,52 +2352,47 @@
     if (!entry || entry.type === 'files') return false;
     if (entry.offline && entry.offline.url) return false;   // already fully saved (local + cloud)
 
-    const key = (entry.offline && entry.offline.key) || ('off_' + videoId);
-    let blob = await idbGet(key);    // re-use the saved file if it's already here (even if the "downloaded" mark was lost)
-    if (!blob) {
-      onStatus && onStatus('Downloading…');
-      let res;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 1800000);   // 30-min cap so long videos have time to finish
-      try { res = await fetch(apiBase() + '/download?v=' + videoId, { signal: ctrl.signal, headers: { 'ngrok-skip-browser-warning': '1' } }); }
-      catch (e) {
-        clearTimeout(timer);
-        const err = new Error(e.name === 'AbortError' ? 'Timed out' : 'Server not reachable');
-        err.code = (e.name === 'AbortError') ? 'failed' : 'no-server';   // timeout = skip this one; real network fail = stop
-        throw err;
-      }
-      clearTimeout(timer);
-      if (!res.ok) {
-        // 503 = no yt-dlp/server → stop. anything else (e.g. 500) = this one video failed → skip it.
-        const e = new Error(res.status === 503 ? 'Server has no yt-dlp' : 'Could not download this video');
-        e.code = (res.status === 503) ? 'no-server' : 'failed';
-        throw e;
-      }
-      // stream the body so we can show a progress bar
-      const total = +res.headers.get('Content-Length') || 0;
-      if (res.body && res.body.getReader) {
-        const reader = res.body.getReader();
-        const chunks = []; let received = 0;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value); received += value.length;
-          onStatus && onStatus('Downloading…', total ? Math.round(received / total * 100) : null);
-        }
-        blob = new Blob(chunks, { type: 'video/mp4' });
-      } else {
-        blob = await res.blob();
-      }
-      await idbPut(key, blob);
+    const H = { 'ngrok-skip-browser-warning': '1' };
+    const base = (apiBase() || '');
+    const fileId = 'off_' + videoId.replace(/[^A-Za-z0-9_\-]/g, '');
+    const key = (entry.offline && entry.offline.key) || fileId;
+
+    // 1. ask the server to start downloading (runs in the background so it can report progress)
+    onStatus && onStatus('Starting…', 0);
+    let startRes;
+    try { startRes = await fetch(base + '/startdownload?v=' + videoId, { headers: H }); }
+    catch (_) { const e = new Error('Server not reachable'); e.code = 'no-server'; throw e; }
+    if (!startRes.ok) { const e = new Error('server'); e.code = (startRes.status === 503) ? 'no-server' : 'failed'; throw e; }
+
+    // 2. poll progress until the file is done (live % for the bar)
+    let size = 0, shown = 0; const startT = Date.now();
+    for (;;) {
+      await new Promise(r => setTimeout(r, 1200));
+      if (Date.now() - startT > 1800000) { const e = new Error('Timed out'); e.code = 'failed'; throw e; }
+      let p;
+      try { p = await fetch(base + '/progress?v=' + videoId, { headers: H }).then(r => r.json()); }
+      catch (_) { continue; }
+      if (p.done) { size = p.size || 0; break; }
+      if (p.pct > shown) shown = p.pct;   // bar only ever moves forward (video + audio are two passes)
+      onStatus && onStatus('Downloading…', shown);
     }
-    let url = null;
+
+    // 3. the file now lives on your PC. Build a URL other devices can reach (the tunnel).
+    const pub = (loadSync().dlServer || '').trim().replace(/\/+$/, '');
+    let url = (pub || base) + '/file?id=' + fileId;
+
+    // 4. if it's small enough + cloud is set up, also push it to Cloudinary (so the Chromebook works with PC off)
     const s = loadSync();
-    const cloudReady = !!(s.cldName && s.cldPreset);
-    const CLOUD_MAX = 95 * 1024 * 1024;
-    if (cloudReady && blob.size < CLOUD_MAX) { onStatus && onStatus('Uploading to cloud…'); try { url = await cloudUpload(blob); } catch (_) {} }
-    if (!url) { onStatus && onStatus('Saving to your server…'); try { url = await uploadToServer(blob, key); } catch (_) {} }   // big video → store on your PC, served via tunnel
+    if (s.cldName && s.cldPreset && size && size < 95 * 1024 * 1024) {
+      onStatus && onStatus('Saving to cloud…', 100);
+      try {
+        const fblob = await fetch(base + '/file?id=' + fileId, { headers: H }).then(r => r.blob());
+        const cu = await cloudUpload(fblob);
+        if (cu) { url = cu; await idbPut(key, fblob); }
+      } catch (_) {}
+    }
+
     const d = loadData();
-    // cloudTried = we attempted upload (so we don't retry it endlessly every load)
     d.videos.forEach(v => { if (v.id === videoId) v.offline = { key, name: (entry.label || 'video') + '.mp4', url, cloudTried: true }; });
     saveData(d);
     renderGrid();
